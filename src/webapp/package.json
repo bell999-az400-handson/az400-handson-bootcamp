@@ -1,0 +1,39 @@
+{
+  "name": "az400-webapp",
+  "version": "1.0.0",
+  "description": "AZ-400 Handson Web Application with Key Vault and Application Insights integration",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "jest --coverage",
+    "test:watch": "jest --watch",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "keywords": [
+    "az400",
+    "devops",
+    "azure",
+    "key-vault",
+    "application-insights"
+  ],
+  "author": "AZ-400 Student",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "applicationinsights": "^2.9.5",
+    "@azure/identity": "^4.0.1",
+    "@azure/keyvault-secrets": "^4.7.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.4",
+    "eslint": "^8.56.0",
+    "nodemon": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

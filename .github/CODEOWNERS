@@ -1,0 +1,23 @@
+# CODEOWNERS - AZ-400 ハンズオン用
+# Day 1で実践: PR時に自動レビュアーアサイン
+
+# インフラコード（Bicep）
+/infra/bicep/**           @az400-admin @infra-team
+
+# Webアプリケーション
+/src/webapp/**            @webapp-team @developers
+
+# CI/CDパイプライン
+/.github/workflows/**     @devops-team @az400-admin
+/.azure/pipelines/**      @devops-team @az400-admin
+
+# ドキュメント
+/docs/**                  @learning-team @everyone
+
+# スクリプト
+/scripts/**               @devops-team @infra-team
+
+# ルートレベルの重要ファイル
+/README.md                @az400-admin
+/.gitignore               @az400-admin
+/LEARNING-PATH.md         @learning-team

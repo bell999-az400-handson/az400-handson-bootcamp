@@ -1,0 +1,214 @@
+-- ========================================
+-- AZ-400 Application Insights KQL練習クエリ
+-- ========================================
+
+-- 基本的なクエリ
+-- ========================================
+
+-- 1️⃣ 時間集計: bin() - 1時間ごとのリクエスト数
+requests
+| where timestamp > ago(24h)
+| summarize RequestCount = count() by bin(timestamp, 1h)
+| render timechart
+
+-- 2️⃣ カラム追加: extend - レスポンスタイムをミリ秒に変換
+requests
+| where timestamp > ago(1h)
+| extend duration_ms = duration
+| project timestamp, name, duration_ms, success
+
+-- 3️⃣ カラム選択: project - 必要なカラムのみ表示
+requests
+| where timestamp > ago(1h)
+| project timestamp, url, resultCode, duration
+
+-- 4️⃣ パーセンタイル: percentile() - 95パーセンタイルのレスポンスタイム
+requests
+| where timestamp > ago(1h)
+| summarize 
+    p50 = percentile(duration, 50),
+    p95 = percentile(duration, 95),
+    p99 = percentile(duration, 99)
+| project 
+    Median = p50,
+    P95 = p95,
+    P99 = p99
+
+-- 5️⃣ エラー率計算
+requests
+| where timestamp > ago(1h)
+| extend isError = toint(success == false)
+| summarize 
+    TotalRequests = count(),
+    ErrorCount = sum(isError),
+    ErrorRate = 100.0 * sum(isError) / count()
+| project TotalRequests, ErrorCount, ErrorRate
+
+
+-- カスタムイベント
+-- ========================================
+
+-- 6️⃣ カスタムイベント集計
+customEvents
+| where timestamp > ago(24h)
+| where name == "HomePage_Accessed"
+| summarize count() by bin(timestamp, 1h)
+| render timechart
+
+-- 7️⃣ カスタムメトリクス
+customMetrics
+| where timestamp > ago(24h)
+| where name == "HomePage_ResponseTime"
+| summarize avg(value), max(value), min(value) by bin(timestamp, 1h)
+| render timechart
+
+
+-- エラー分析
+-- ========================================
+
+-- 8️⃣ 例外分析
+exceptions
+| where timestamp > ago(24h)
+| summarize count() by outerMessage
+| order by count_ desc
+
+-- 9️⃣ 失敗したリクエスト
+requests
+| where timestamp > ago(24h)
+| where success == false
+| project timestamp, name, url, resultCode, duration
+| order by timestamp desc
+
+
+-- パフォーマンス分析
+-- ========================================
+
+-- 🔟 遅いリクエスト（1秒以上）
+requests
+| where timestamp > ago(1h)
+| where duration > 1000
+| project timestamp, name, url, duration
+| order by duration desc
+
+-- 1️⃣1️⃣ エンドポイント別平均レスポンスタイム
+requests
+| where timestamp > ago(24h)
+| summarize 
+    AvgDuration = avg(duration),
+    P95Duration = percentile(duration, 95),
+    RequestCount = count()
+    by name
+| order by AvgDuration desc
+
+
+-- 複雑なクエリ
+-- ========================================
+
+-- 1️⃣2️⃣ 複雑なクエリ: extend + project + percentile
+requests
+| where timestamp > ago(1h)
+| extend duration_ms = duration
+| summarize 
+    RequestCount = count(),
+    AvgDuration = avg(duration_ms),
+    P95Duration = percentile(duration_ms, 95)
+    by bin(timestamp, 5m), name
+| project timestamp, name, RequestCount, AvgDuration, P95Duration
+| order by timestamp desc
+
+-- 1️⃣3️⃣ 時間帯別リクエスト数（曜日・時間別）
+requests
+| where timestamp > ago(7d)
+| extend 
+    DayOfWeek = dayofweek(timestamp),
+    Hour = hourofday(timestamp)
+| summarize RequestCount = count() by DayOfWeek, Hour
+| order by DayOfWeek, Hour
+
+-- 1️⃣4️⃣ 成功率の時系列推移
+requests
+| where timestamp > ago(24h)
+| summarize 
+    Total = count(),
+    Successful = countif(success == true)
+    by bin(timestamp, 1h)
+| extend SuccessRate = 100.0 * Successful / Total
+| project timestamp, SuccessRate
+| render timechart
+
+
+-- 試験頻出パターン
+-- ========================================
+
+-- 1️⃣5️⃣ extend vs project の違い
+-- extend: カラム追加（既存カラムも残る）
+requests
+| extend duration_ms = duration
+| project timestamp, duration, duration_ms  -- 元のdurationも表示可能
+| take 10
+
+-- project: カラム選択（指定したカラムのみ）
+requests
+| project timestamp, duration  -- durationのみ表示
+| take 10
+
+-- 1️⃣6️⃣ bin()で異なる時間間隔
+-- 5分間隔
+requests
+| where timestamp > ago(1h)
+| summarize count() by bin(timestamp, 5m)
+| render timechart
+
+-- 1日間隔
+requests
+| where timestamp > ago(30d)
+| summarize count() by bin(timestamp, 1d)
+| render timechart
+
+-- 1️⃣7️⃣ パーセンタイルの実践的利用
+-- SLA監視（95%のリクエストが1秒以内）
+requests
+| where timestamp > ago(1h)
+| summarize P95 = percentile(duration, 95)
+| extend SLA_Met = P95 < 1000
+| project P95, SLA_Met
+
+
+-- 依存関係分析
+-- ========================================
+
+-- 1️⃣8️⃣ 外部依存関係（Key Vaultなど）
+dependencies
+| where timestamp > ago(24h)
+| summarize 
+    CallCount = count(),
+    AvgDuration = avg(duration)
+    by target, type
+| order by CallCount desc
+
+-- 1️⃣9️⃣ 失敗した依存関係呼び出し
+dependencies
+| where timestamp > ago(24h)
+| where success == false
+| project timestamp, target, type, resultCode, duration
+| order by timestamp desc
+
+
+-- 実践的なダッシュボードクエリ
+-- ========================================
+
+-- 2️⃣0️⃣ アプリケーションヘルスダッシュボード
+requests
+| where timestamp > ago(1h)
+| summarize 
+    TotalRequests = count(),
+    SuccessfulRequests = countif(success == true),
+    FailedRequests = countif(success == false),
+    AvgResponseTime = avg(duration),
+    P95ResponseTime = percentile(duration, 95)
+| extend SuccessRate = 100.0 * SuccessfulRequests / TotalRequests
+| project 
+    TotalRequests, 
+    SuccessRate, 
+    AvgResponseTime, 
+    P95ResponseTime

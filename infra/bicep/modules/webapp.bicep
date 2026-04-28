@@ -1,0 +1,60 @@
+@description('Web App名')
+param webAppName string
+
+@description('App Service Plan ID')
+param appServicePlanId string
+
+@description('ロケーション')
+param location string = resourceGroup().location
+
+@description('Application Insights Connection String')
+param appInsightsConnectionString string
+
+@description('Key Vault URI')
+param keyVaultUri string
+
+resource webApp 'Microsoft.Web/sites@2023-01-01' = {
+  name: webAppName
+  location: location
+  kind: 'app,linux,container'
+  identity: {
+    type: 'SystemAssigned'  // system-assigned Managed Identity有効化
+  }
+  properties: {
+    serverFarmId: appServicePlanId
+    httpsOnly: true
+    siteConfig: {
+      linuxFxVersion: 'DOCKER|mcr.microsoft.com/appsvc/staticsite:latest'  // デフォルトイメージ
+      alwaysOn: true
+      ftpsState: 'Disabled'
+      minTlsVersion: '1.2'
+      appSettings: [
+        {
+          name: 'WEBSITES_ENABLE_APP_SERVICE_STORAGE'
+          value: 'false'
+        }
+        {
+          name: 'DOCKER_ENABLE_CI'
+          value: 'true'
+        }
+        {
+          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+          value: appInsightsConnectionString
+        }
+        {
+          name: 'KEY_VAULT_URL'
+          value: keyVaultUri
+        }
+        {
+          name: 'PORT'
+          value: '3000'
+        }
+      ]
+    }
+  }
+}
+
+output webAppName string = webApp.name
+output webAppHostName string = webApp.properties.defaultHostName
+output managedIdentityPrincipalId string = webApp.identity.principalId
+output webAppId string = webApp.id
