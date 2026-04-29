@@ -140,11 +140,14 @@ main
 基本的な保護:
 - ✅ **Require a pull request before merging** （PR必須）
   - **Require approvals**: `1` （最低1人の承認）
+    - **注意**: GitHubの仕様上、`0`に設定することはできません
+    - **1人で作業している場合**: 下記の「Do not allow bypassing」のチェックを外して管理者がバイパス可能にする
   - ✅ **Dismiss stale pull request approvals when new commits are pushed** （新コミット時に承認リセット）
 
 推奨設定:
 - ✅ **Require conversation resolution before merging** （コメント解決必須）
 - ✅ **Do not allow bypassing the above settings** （管理者も保護ルールに従う）
+  - **1人で作業している場合**: このチェックを外すと、管理者（リポジトリオーナー）はApprovalなしでPRをマージ可能
 
 オプション（Day 3のCI/CD実装後に有効化推奨）:
 - ⬜ **Require status checks to pass before merging** （CI/CDテスト成功必須）
@@ -177,6 +180,28 @@ remote: error: GH006: Protected branch update failed for refs/heads/main.
 - ✅ 直接コミット禁止（PR必須）
 - ✅ レビュー承認必須
 - ✅ レビューコメント解決必須
+
+**1人で作業している場合のPRマージ方法**:
+
+**方法1: 管理者バイパスを有効化（推奨）**
+1. 「Do not allow bypassing the above settings」の **チェックを外す**
+2. PR作成後、GitHub Web UIで **「Merge without waiting for requirements to be met (bypass branch protections)」** を選択
+3. 管理者権限でApprovalなしでマージ可能
+4. 実務で管理者権限を持つ場合の動作を学習できる
+
+**方法2: 別アカウントでApproval（チーム開発の練習）**
+1. 別のGitHubアカウントをコラボレーターとして追加
+2. そのアカウントでPRをApprove
+3. 本番環境に近い運用を練習できる
+
+**方法3: PR要件を緩和（非推奨：学習目的のみ）**
+1. 「Require a pull request before merging」自体の **チェックを外す**
+2. ブランチ保護は残るが、PRなしで直接mainにpush可能になる
+3. 学習には不向きだが、テスト目的では選択肢になる
+
+**AZ-400試験では「方法1」の動作理解が重要**:
+- Q: "管理者がブランチ保護ルールをバイパスできるようにするには？"
+- A: 「Do not allow bypassing the above settings」のチェックを外す
 
 #### 1.4 Azure DevOpsプロジェクト作成
 
@@ -274,6 +299,76 @@ git push origin main
 
 #### 2.4 Cycle Time vs Lead Time 理解
 
+**確認場所**: Azure DevOps Web UI > **Overview > Dashboards**
+
+**操作手順**:
+1. https://dev.azure.com/<your-org>/az400-handson にアクセス
+2. 左サイドバーから **Overview** をクリック
+3. サブメニューから **Dashboards** を選択
+4. 既存のダッシュボードを開くか、**+ New Dashboard** で新規作成
+5. **Add a widget** をクリック
+6. ウィジェットギャラリーで **"Cycle Time"** または **"Lead Time"** を検索
+7. ウィジェットを選択して **Add** をクリック
+8. ウィジェット設定で対象のWork Itemタイプ（User Story、Task等）を選択
+9. **時間範囲（Time period）** を設定:
+   - **推奨**: **"Rolling period"** > **"Last 30 days"** を選択
+   - **注意**: 期間は **最低14日間以上** 必要です
+   - **手動設定する場合**: Start dateとEnd dateの差を14日以上にする
+   - **エラー例**: "14 days is the minimum allowable time period." → 期間を延長してください
+10. グラフで可視化されたCycle Time/Lead Timeを確認
+
+**⚠️ よくあるエラーと解決方法**:
+
+**エラー**: `14 days is the minimum allowable time period.`
+
+**原因**: Start dateとEnd dateの期間が14日未満
+
+**解決方法**:
+```
+❌ NG: 2026/04/20 ～ 2026/04/29 (10日間)
+✅ OK: 2026/04/15 ～ 2026/04/29 (15日間)
+✅ 推奨: "Last 30 days" を選択（自動で過去30日間）
+```
+
+**なぜ14日間が最小なのか**:
+- Cycle Time/Lead Timeは **トレンド分析** のためのメトリクス
+- 短期間では統計的に意味のある傾向が見えない
+- 最低14日間のデータでパターンを把握するのがベストプラクティス
+
+**Analytics viewsとの違い**:
+- **Analytics views**: データソースの定義（どのWork Itemを分析するか）
+- **Dashboards**: 実際の可視化・グラフ表示（Cycle Time/Lead Timeウィジェットを配置）
+
+**🤖 自動追跡の仕組み（重要）**:
+
+**手動で時間を入力する必要はありません！** Work Itemの **State（状態）** を変更するだけで、Azure DevOpsが自動的にタイムスタンプを記録し、Cycle Time/Lead Timeを計算します。
+
+**必要な操作**:
+- ✅ Work Itemの状態を変更する（New → Active → Closed）
+- ❌ 開始時間・終了時間を手動入力（不要）
+
+**自動記録されるフィールド**:
+- `System.CreatedDate`: Work Item作成日時
+- `Microsoft.VSTS.Common.ActivatedDate`: Active状態になった日時
+- `Microsoft.VSTS.Common.ClosedDate`: Closed状態になった日時
+
+これらのタイムスタンプから、自動的にCycle Time/Lead Timeが計算されます。
+
+**実践例**:
+```
+1. Work Item作成 → "New" (2026/04/29 09:00 自動記録)
+   ↓
+2. 作業開始 → "Active" に変更 (2026/04/29 10:00 自動記録)
+   ↓
+3. 完了 → "Closed" に変更 (2026/04/30 15:00 自動記録)
+   ↓
+4. 自動計算:
+   - Cycle Time = 29時間（Active → Closed）
+   - Lead Time = 30時間（New → Closed）
+```
+
+**概念**:
+
 **Cycle Time**: 作業開始（Active）→ 完了（Done）までの時間
 **Lead Time**: 作成（New）→ 完了（Done）までの時間
 
@@ -286,6 +381,7 @@ New → Active → Resolved → Closed
 **試験ひっかけポイント**:
 - "作業開始から完了まで" = Cycle Time
 - "作成から完了まで" = Lead Time
+- "Cycle Time/Lead Timeを可視化する場所" = Dashboards（Analytics viewsではない）
 
 ---
 
