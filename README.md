@@ -66,7 +66,7 @@ cd az400-handson-bootcamp
 
 ```bash
 # Azure にログイン
-az login
+az login --use-device-code
 
 # サブスクリプション設定
 az account set --subscription "<your-subscription-id>"
@@ -75,7 +75,152 @@ az account set --subscription "<your-subscription-id>"
 az group create --name rg-az400-handson --location japaneast
 ```
 
-### 3. Day 1の開始
+### 3. Azure DevOpsのセットアップ
+
+#### 3.1. プロジェクト作成
+
+1. https://dev.azure.com にアクセス
+2. 「+ New project」をクリック
+3. 以下を入力：
+   - **Project name**: `az400-handson`
+   - **Description**: `AZ-400 Handson Bootcamp - 3日間集中演習環境`
+   - **Visibility**: Private
+   - **Version control**: Git
+   - **Work item process**: Agile
+4. 「Create」をクリック
+
+#### 3.2. Personal Access Token (PAT) の作成
+
+Azure DevOps CLI操作に必要なPATを作成します。
+
+1. https://dev.azure.com/{your-org}/_usersSettings/tokens にアクセス
+2. 「+ New Token」をクリック
+3. 以下を設定：
+   - **Name**: `AZ400-CLI-Token`
+   - **Organization**: 該当組織を選択
+   - **Expiration**: 30日（学習期間に応じて調整）
+   - **Scopes**: **Full access** または **Work Items (Read, write, & manage)**
+4. 「Create」をクリックしてトークンをコピー（**このタイミングでしか表示されません！**）
+
+#### 3.3. PATの環境変数設定（PowerShell）
+
+```powershell
+# 1. PowerShellプロファイルが存在しない場合は作成
+if (!(Test-Path -Path $PROFILE)) {
+    New-Item -ItemType File -Path $PROFILE -Force
+}
+
+# 2. PATをプロファイルに追記（トークンは先ほどコピーしたものに置き換え）
+Add-Content -Path $PROFILE -Value "`n# Azure DevOps PAT`n`$env:AZURE_DEVOPS_EXT_PAT = `"your-pat-token-here`""
+
+# 3. 現在のPowerShellセッションで即座に有効化（再起動不要）
+$env:AZURE_DEVOPS_EXT_PAT = "your-pat-token-here"
+
+# 4. 設定確認（最初の10文字のみ表示）
+$env:AZURE_DEVOPS_EXT_PAT.Substring(0, 10) + "..."
+```
+
+**補足**:
+- 次回以降、新しいPowerShellセッションを開くと自動的にPATが読み込まれます
+- プロファイルの場所は通常 `C:\Users\<username>\Documents\PowerShell\Microsoft.PowerShell_profile.ps1` です
+- プロファイルを確認する場合: `code $PROFILE`
+
+**セキュリティ上の注意**:
+- PATは機密情報です。Gitにコミットしないでください
+- プロファイルをGit管理する場合は、別ファイル（.envなど）に分離し`.gitignore`に追加してください
+- PATの有効期限が切れた場合は、Azure DevOpsで再生成し、プロファイルを更新してください
+
+#### 3.4. Azure DevOps CLI設定
+
+```bash
+# Azure DevOps拡張機能のインストール（初回のみ）
+az extension add --name azure-devops
+
+# デフォルト設定
+az devops configure --defaults organization=https://dev.azure.com/your-org project=az400-handson
+
+# 動作確認
+az devops project show --project az400-handson
+```
+
+#### 3.5. Work Itemsのインポート
+
+用意されているCSVファイルから66個のWork Items（Epic、Feature、User Story、Task）を一括作成します。
+
+```powershell
+# スクリプトディレクトリに移動
+cd scripts\setup
+
+# Work Itemsインポートスクリプトを実行
+.\import-workitems.ps1 -Organization "your-org" -Project "az400-handson"
+```
+
+**作成されるWork Items**:
+- Epic: 1個（AZ-400 Handson Bootcamp）
+- Feature: 3個（Day 1, 2, 3）
+- User Story: 12個
+- Task: 50個
+- **合計: 66個**
+
+**確認方法**:
+```
+https://dev.azure.com/{your-org}/az400-handson/_workitems
+```
+
+#### 3.6. 親子関係の設定
+
+Work Itemsを作成した後、Epic → Feature → User Story → Taskの階層構造を設定します。
+
+**方法1: スクリプトで自動設定（推奨）**
+
+```powershell
+# scripts/setupディレクトリにいることを確認
+cd scripts\setup
+
+# 親子関係を一括設定（65個のリンクを作成）
+.\link-workitems.ps1 -Organization "your-org" -Project "az400-handson"
+```
+
+**実行結果の例**:
+```
+✓ 成功: 65 / 65
+
+📊 設定された階層:
+  Epic (1個)
+  ├─ Feature (3個)
+  │  ├─ User Story (12個)
+  │  │  └─ Task (50個)
+```
+
+**方法2: Web UIで手動設定**
+
+1. Azure DevOps Boards を開く
+2. Backlog view でドラッグ&ドロップして階層を設定
+3. または、各Work Itemを開いて「Add link」→「Add parent」で親を設定
+
+**確認方法**:
+
+親子関係が正しく設定されたか確認します：
+
+```
+# Epics Backlog（階層表示）
+https://dev.azure.com/{your-org}/az400-handson/_backlogs/backlog/Epics
+
+# Board View（カンバン）
+https://dev.azure.com/{your-org}/az400-handson/_boards/board
+```
+
+**確認ポイント**:
+- Epicを展開すると配下のFeatureが表示される
+- Featureを展開すると配下のUser Storyが表示される
+- User Storyを展開すると配下のTaskが表示される
+- 親Work Itemの進捗は子Taskの完了率から自動計算される
+
+**IDマッピングファイル**:
+- スクリプト実行後、`WorkItems/workitem-id-mapping.csv` が作成されます
+- このファイルで元のCSV IDと新しいAzure DevOps IDの対応を確認できます
+
+### 4. Day 1の開始
 
 詳細は [`docs/handson/day1-git-github.md`](docs/handson/day1-git-github.md) を参照してください。
 
