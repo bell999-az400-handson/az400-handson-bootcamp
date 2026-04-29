@@ -66,121 +66,11 @@ git push -u origin main
 git clone https://github.com/<your-github-username>/az400-handson-bootcamp.git
 cd az400-handson-bootcamp
 
-# テンプレートファイルをコピー（元のリポジトリから）
+# このテンプレートリポジトリの内容をコピー
+# （handson-bootcampフォルダの内容を新リポジトリにコピー）
 ```
 
-#### 1.2 Gitブランチをmainにリネーム（既にmasterの場合）
-
-**既にブランチがmainの場合は、このステップをスキップしてください。**
-
-既存のリポジトリでローカル・リモート両方のブランチが`master`の場合、以下の手順で`main`に変更します：
-
-```bash
-# ステップ1: ローカルブランチをmainに変更
-git branch -m master main
-
-# ステップ2: リモートにmainブランチをプッシュ
-git push -u origin main
-
-# ステップ3: リモートHEADをmainに変更
-git remote set-head origin main
-
-# ステップ4: GitHub CLIでデフォルトブランチを変更
-gh repo edit <your-github-username>/az400-handson-bootcamp --default-branch main
-
-# 方法4-2: GitHub Web UIで変更する場合
-# 1. https://github.com/<your-github-username>/az400-handson-bootcamp/settings/branches を開く
-# 2. ページ上部の「Default branch」セクションで切り替えアイコン（⇄）をクリック
-# 3. ドロップダウンから「main」を選択
-# 4. 「I understand, update the default branch」をクリック
-
-# ステップ5: リモートのmasterブランチを削除
-git push origin --delete master
-
-# ステップ6: ローカルの参照を整理
-git fetch --prune
-
-# 確認
-git branch -a
-# 出力: * main
-#       remotes/origin/HEAD -> origin/main
-#       remotes/origin/main
-```
-
-**期待される結果**:
-- ローカル: `main` のみ
-- リモート: `origin/main` のみ（`origin/master` は削除済み）
-- `origin/HEAD` が `origin/main` を指している
-
-#### 1.3 Branch Protection設定（ブランチ保護）
-
-GitHubで`main`ブランチに保護ルールを設定し、誤った操作を防ぎます。
-
-**GitHub CLIで設定する場合**:
-
-```bash
-# ブランチ保護設定ページを開く
-start https://github.com/<your-github-username>/az400-handson-bootcamp/settings/branch_protection_rules/new
-# 例: start https://github.com/taku999/az400-handson-bootcamp/settings/branch_protection_rules/new
-```
-
-**Web UIで設定する場合**:
-
-1. GitHub リポジトリページ > **Settings** > **Branches**
-2. 「Branch protection rules」セクションで **Add rule** をクリック
-3. 以下を設定：
-
-**Branch name pattern（必須）**:
-```
-main
-```
-
-**Protect matching branches（保護ルール）**:
-
-基本的な保護:
-- ✅ **Require a pull request before merging** （PR必須）
-  - **Require approvals**: `1` （最低1人の承認）
-  - ✅ **Dismiss stale pull request approvals when new commits are pushed** （新コミット時に承認リセット）
-
-推奨設定:
-- ✅ **Require conversation resolution before merging** （コメント解決必須）
-- ✅ **Do not allow bypassing the above settings** （管理者も保護ルールに従う）
-
-オプション（Day 3のCI/CD実装後に有効化推奨）:
-- ⬜ **Require status checks to pass before merging** （CI/CDテスト成功必須）
-  - パイプライン実装後に有効化
-- ⬜ **Require linear history** （リベースのみ、マージコミット禁止）
-
-4. ページ下部の **「Create」** ボタンをクリック
-
-**設定完了の確認**:
-
-```bash
-# 試しにmainに直接pushしてみる（拒否されるはず）
-echo "# Test" > test-protection.txt
-git add test-protection.txt
-git commit -m "test: branch protection test"
-git push origin main
-# 期待されるエラー: remote: error: GH006: Protected branch update failed
-```
-
-保護が有効な場合、以下のエラーが表示されます：
-```
-remote: error: GH006: Protected branch update failed for refs/heads/main.
-```
-
-これで、`main`への直接pushが禁止され、必ずPull Request経由でマージする必要があります。
-
-**効果**:
-- ✅ Force push禁止（履歴の破壊を防ぐ）
-- ✅ ブランチ削除禁止
-- ✅ 直接コミット禁止（PR必須）
-- ✅ レビュー承認必須
-- ✅ レビューコメント解決必須
-
-#### 1.4 Azure DevOpsプロジェクト作成
-
-**既に README.md の手順でプロジェクトを作成済みの場合は、このステップをスキップしてください。**
+#### 1.2 Azure DevOpsプロジェクト作成
 
 1. https://dev.azure.com にアクセス
 2. 「New Project」をクリック
@@ -274,6 +164,76 @@ git push origin main
 
 #### 2.4 Cycle Time vs Lead Time 理解
 
+**確認場所**: Azure DevOps Web UI > **Overview > Dashboards**
+
+**操作手順**:
+1. https://dev.azure.com/<your-org>/az400-handson にアクセス
+2. 左サイドバーから **Overview** をクリック
+3. サブメニューから **Dashboards** を選択
+4. 既存のダッシュボードを開くか、**+ New Dashboard** で新規作成
+5. **Add a widget** をクリック
+6. ウィジェットギャラリーで **"Cycle Time"** または **"Lead Time"** を検索
+7. ウィジェットを選択して **Add** をクリック
+8. ウィジェット設定で対象のWork Itemタイプ（User Story、Task等）を選択
+9. **時間範囲（Time period）** を設定:
+   - **推奨**: **"Rolling period"** > **"Last 30 days"** を選択
+   - **注意**: 期間は **最低14日間以上** 必要です
+   - **手動設定する場合**: Start dateとEnd dateの差を14日以上にする
+   - **エラー例**: "14 days is the minimum allowable time period." → 期間を延長してください
+10. グラフで可視化されたCycle Time/Lead Timeを確認
+
+**⚠️ よくあるエラーと解決方法**:
+
+**エラー**: `14 days is the minimum allowable time period.`
+
+**原因**: Start dateとEnd dateの期間が14日未満
+
+**解決方法**:
+```
+❌ NG: 2026/04/20 ～ 2026/04/29 (10日間)
+✅ OK: 2026/04/15 ～ 2026/04/29 (15日間)
+✅ 推奨: "Last 30 days" を選択（自動で過去30日間）
+```
+
+**なぜ14日間が最小なのか**:
+- Cycle Time/Lead Timeは **トレンド分析** のためのメトリクス
+- 短期間では統計的に意味のある傾向が見えない
+- 最低14日間のデータでパターンを把握するのがベストプラクティス
+
+**Analytics viewsとの違い**:
+- **Analytics views**: データソースの定義（どのWork Itemを分析するか）
+- **Dashboards**: 実際の可視化・グラフ表示（Cycle Time/Lead Timeウィジェットを配置）
+
+**🤖 自動追跡の仕組み（重要）**:
+
+**手動で時間を入力する必要はありません！** Work Itemの **State（状態）** を変更するだけで、Azure DevOpsが自動的にタイムスタンプを記録し、Cycle Time/Lead Timeを計算します。
+
+**必要な操作**:
+- ✅ Work Itemの状態を変更する（New → Active → Closed）
+- ❌ 開始時間・終了時間を手動入力（不要）
+
+**自動記録されるフィールド**:
+- `System.CreatedDate`: Work Item作成日時
+- `Microsoft.VSTS.Common.ActivatedDate`: Active状態になった日時
+- `Microsoft.VSTS.Common.ClosedDate`: Closed状態になった日時
+
+これらのタイムスタンプから、自動的にCycle Time/Lead Timeが計算されます。
+
+**実践例**:
+```
+1. Work Item作成 → "New" (2026/04/29 09:00 自動記録)
+   ↓
+2. 作業開始 → "Active" に変更 (2026/04/29 10:00 自動記録)
+   ↓
+3. 完了 → "Closed" に変更 (2026/04/30 15:00 自動記録)
+   ↓
+4. 自動計算:
+   - Cycle Time = 29時間（Active → Closed）
+   - Lead Time = 30時間（New → Closed）
+```
+
+**概念**:
+
 **Cycle Time**: 作業開始（Active）→ 完了（Done）までの時間
 **Lead Time**: 作成（New）→ 完了（Done）までの時間
 
@@ -286,6 +246,7 @@ New → Active → Resolved → Closed
 **試験ひっかけポイント**:
 - "作業開始から完了まで" = Cycle Time
 - "作成から完了まで" = Lead Time
+- "Cycle Time/Lead Timeを可視化する場所" = Dashboards（Analytics viewsではない）
 
 ---
 
