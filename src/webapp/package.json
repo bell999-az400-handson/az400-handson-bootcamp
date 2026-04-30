@@ -1,6 +1,6 @@
 {
   "name": "az400-webapp",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "AZ-400 Handson Web Application with Key Vault and Application Insights integration",
   "main": "app.js",
   "scripts": {
