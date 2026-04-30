@@ -1,6 +1,7 @@
 targetScope = 'resourceGroup'
 
 @description('環境名（dev/staging/prod）')
+@minLength(3)
 param environmentName string = 'dev'
 
 @description('ロケーション')
@@ -29,9 +30,8 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
   name: '${resourcePrefix}-${environmentName}-asp'
   location: location
   sku: {
-    name: 'B1'
-    tier: 'Basic'
-    capacity: 1
+    name: 'F1'
+    tier: 'Free'
   }
   kind: 'linux'
   properties: {
@@ -48,7 +48,7 @@ module appInsights 'modules/appinsights.bicep' = {
   }
 }
 
-// Web App（Managed Identity付き）
+// Web App（Managed Identity付き） - Key Vault参照なしで先にデプロイ
 module webApp 'modules/webapp.bicep' = {
   name: 'webAppDeployment'
   params: {
@@ -56,11 +56,10 @@ module webApp 'modules/webapp.bicep' = {
     appServicePlanId: appServicePlan.id
     location: location
     appInsightsConnectionString: appInsights.outputs.connectionString
-    keyVaultUri: keyVault.outputs.keyVaultUri
   }
 }
 
-// Key Vault
+// Key Vault - Web AppのManaged Identityを使用
 module keyVault 'modules/keyvault.bicep' = {
   name: 'keyVaultDeployment'
   params: {

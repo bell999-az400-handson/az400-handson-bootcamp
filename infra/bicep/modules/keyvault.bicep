@@ -22,7 +22,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableRbacAuthorization: false  // Access Policies使用
     enableSoftDelete: true
     softDeleteRetentionInDays: 7
-    enablePurgeProtection: false
+    // enablePurgeProtection は削除（一度有効化すると無効化不可のため）
     
     // データプレーン権限: Access Policies
     accessPolicies: [
@@ -52,7 +52,7 @@ resource sampleSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
   name: 'DatabaseConnectionString'
   properties: {
-    value: 'Server=tcp:sample.database.windows.net,1433;Database=sampledb;User ID=admin;Password=P@ssw0rd;Encrypt=true;'
+    value: 'Server=tcp:sample.${environment().suffixes.sqlServerHostname},1433;Database=sampledb;User ID=admin;Password=P@ssw0rd;Encrypt=true;'
   }
 }
 

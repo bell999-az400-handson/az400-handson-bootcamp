@@ -10,9 +10,6 @@ param location string = resourceGroup().location
 @description('Application Insights Connection String')
 param appInsightsConnectionString string
 
-@description('Key Vault URI')
-param keyVaultUri string
-
 resource webApp 'Microsoft.Web/sites@2023-01-01' = {
   name: webAppName
   location: location
@@ -25,7 +22,7 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
     httpsOnly: true
     siteConfig: {
       linuxFxVersion: 'DOCKER|mcr.microsoft.com/appsvc/staticsite:latest'  // デフォルトイメージ
-      alwaysOn: true
+      alwaysOn: false  // Free tierではfalse必須
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
@@ -40,10 +37,6 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
         {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
           value: appInsightsConnectionString
-        }
-        {
-          name: 'KEY_VAULT_URL'
-          value: keyVaultUri
         }
         {
           name: 'PORT'
