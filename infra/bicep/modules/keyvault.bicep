@@ -40,12 +40,19 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
       }
     ]
     
+    // 🔒 セキュリティ: ネットワークアクセス制限
+    // 本番環境では defaultAction: 'Deny' を推奨
+    // ローカル開発環境からアクセスする場合は 'Allow' または特定IPを許可
     networkAcls: {
-      defaultAction: 'Allow'
+      defaultAction: 'Allow'  // 開発用: 'Deny'に変更して特定IPのみ許可することを推奨
       bypass: 'AzureServices'
     }
   }
 }
+
+// 🔒 セキュリティ注意: 以下はハンズオン学習用のサンプルシークレットです
+// 本番環境では、シークレット値をBicepファイルにハードコードしないでください
+// 推奨: Azure Portal、Azure CLI、または secure parameters を使用
 
 // サンプルシークレット
 resource sampleSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {

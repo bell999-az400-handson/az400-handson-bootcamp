@@ -11,6 +11,7 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   properties: {
     Application_Type: 'web'
     RetentionInDays: 30
+    // 🔒 セキュリティ: 開発環境では 'Enabled'、本番環境では Private Link使用を推奨
     publicNetworkAccessForIngestion: 'Enabled'
     publicNetworkAccessForQuery: 'Enabled'
   }

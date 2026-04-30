@@ -15,16 +15,16 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
   location: location
   kind: 'app,linux,container'
   identity: {
-    type: 'SystemAssigned'  // system-assigned Managed Identity有効化
+    type: 'SystemAssigned'  // 🔒 セキュリティ: system-assigned Managed Identity有効化
   }
   properties: {
     serverFarmId: appServicePlanId
-    httpsOnly: true
+    httpsOnly: true  // 🔒 セキュリティ: HTTPS通信のみ許可
     siteConfig: {
       linuxFxVersion: 'DOCKER|mcr.microsoft.com/appsvc/staticsite:latest'  // デフォルトイメージ
       alwaysOn: false  // Free tierではfalse必須
-      ftpsState: 'Disabled'
-      minTlsVersion: '1.2'
+      ftpsState: 'Disabled'  // 🔒 セキュリティ: FTP無効化
+      minTlsVersion: '1.2'  // 🔒 セキュリティ: TLS 1.2最小バージョン
       appSettings: [
         {
           name: 'WEBSITES_ENABLE_APP_SERVICE_STORAGE'

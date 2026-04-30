@@ -776,7 +776,7 @@ param resourcePrefix string = 'az400'
 
 // Storage Account
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: '${resourcePrefix}${environmentName}storage'
+  name: '${resourcePrefix}${environmentName}${uniqueString(resourceGroup().id)}'
   location: location
   sku: {
     name: 'Standard_LRS'
@@ -785,6 +785,11 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   properties: {
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
+    allowBlobPublicAccess: false  // ⭐ セキュリティ: Blobパブリックアクセス無効化
+    networkAcls: {
+      defaultAction: 'Deny'  // ⭐ セキュリティ: デフォルト拒否
+      bypass: 'AzureServices'
+    }
   }
 }
 
@@ -825,6 +830,27 @@ output appServicePlanName string = appServicePlan.name
 
 #### 5.3 デプロイ実行
 
+**🔒 セキュリティチェックポイント**
+
+デプロイ前に以下のセキュリティ設定を確認してください：
+
+1. **Storage Account**
+   - ✅ `minimumTlsVersion: 'TLS1_2'` - TLS 1.2以上を強制
+   - ✅ `supportsHttpsTrafficOnly: true` - HTTPS通信のみ許可
+   - ✅ `allowBlobPublicAccess: false` - パブリックアクセス無効化（推奨）
+   - ✅ `networkAcls.defaultAction: 'Deny'` - ネットワークアクセス制限
+
+2. **命名規則**
+   - ✅ `uniqueString()` を使用してグローバルユニーク性を確保
+   - リソース名の衝突を防止
+
+3. **認証情報**
+   - ✅ コード内に認証情報をハードコードしない
+   - ✅ Key Vault使用（Day 2で実装予定）
+   - ✅ Managed Identity使用（Day 2で実装予定）
+
+---
+
 ```bash
 az deployment group create \
   --resource-group rg-az400-handson \
@@ -834,6 +860,189 @@ az deployment group create \
 # デプロイ確認
 az resource list --resource-group rg-az400-handson --output table
 ```
+
+**⚠️ よくあるデプロイエラーと解決方法**
+
+実際のデプロイでは以下のエラーが発生する可能性があります：
+
+---
+
+**エラー 1: BCP080 循環依存エラー**
+
+```
+Error BCP080: The expression is involved in a cycle:
+  'keyVault' -> 'webApp' -> 'keyVault'
+```
+
+**原因**: Key VaultがWeb AppのManaged Identity Principal IDを必要とし、Web AppがKey VaultのURIを必要とする循環参照
+
+**解決方法**:
+
+1. `infra/bicep/main.bicep` から `keyVaultUri` パラメータを削除:
+
+```bicep
+// ❌ 削除: keyVaultUri パラメータ
+module webApp 'modules/webapp.bicep' = {
+  name: 'webApp'
+  params: {
+    // keyVaultUri: keyVault.outputs.keyVaultUri  // 削除
+  }
+}
+```
+
+2. `infra/bicep/modules/webapp.bicep` から `keyVaultUri` パラメータ定義を削除
+
+3. デプロイ順序を調整（webApp → keyVault の順）
+
+---
+
+**エラー 2: VM Quota超過エラー**
+
+```
+Code: SubscriptionIsOverQuotaForSku
+Message: This region has quota of 0 instances for your subscription.
+```
+
+**原因**: サブスクリプションのVMクォータ不足（B1 BasicまたはF1 Free tier）
+
+**解決方法**:
+
+1. **F1 Free tierに変更** （推奨：無料枠内で実施可能）:
+
+`infra/bicep/main.bicep` のApp Service Plan SKUを変更:
+
+```bicep
+resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
+  name: '${resourcePrefix}-${environmentName}-asp'
+  location: location
+  sku: {
+    name: 'F1'      // B1 → F1 に変更
+    tier: 'Free'    // Basic → Free に変更
+  }
+  kind: 'linux'
+  properties: {
+    reserved: true
+  }
+}
+```
+
+2. **Quotaリクエストを提出**:
+
+```bash
+# Azure Portal > Subscriptions > Usage + quotas
+# "Free Web App Hosting Plan" で検索してリクエスト
+```
+
+---
+
+**エラー 3: Key Vault enablePurgeProtection エラー**
+
+```
+Code: BadRequest
+Message: The property 'enablePurgeProtection' cannot be set to false.
+```
+
+**原因**: `enablePurgeProtection` は一度有効にすると無効化できない（Azure仕様）
+
+**解決方法**:
+
+`infra/bicep/modules/keyvault.bicep` から `enablePurgeProtection` プロパティを**完全に削除**:
+
+```bicep
+resource keyVault 'Microsoft.KeyVault/vaults@2023-02-01' = {
+  name: keyVaultName
+  location: location
+  properties: {
+    tenantId: subscription().tenantId
+    sku: {
+      family: 'A'
+      name: 'standard'
+    }
+    // enablePurgeProtection: false  // ← この行を削除
+    accessPolicies: [
+      // ...
+    ]
+  }
+}
+```
+
+---
+
+**エラー 4: alwaysOn not supported on F1 tier**
+
+```
+Code: BadRequest
+Message: AlwaysOn cannot be set for this site as the plan does not allow it.
+```
+
+**原因**: F1 Free tierでは `alwaysOn` 機能がサポートされていない
+
+**解決方法**:
+
+`infra/bicep/modules/webapp.bicep` で `alwaysOn` を `false` に設定:
+
+```bicep
+resource webApp 'Microsoft.Web/sites@2023-01-01' = {
+  name: webAppName
+  location: location
+  properties: {
+    serverFarmId: appServicePlanId
+    siteConfig: {
+      alwaysOn: false  // true → false に変更（F1 tier対応）
+      linuxFxVersion: 'NODE|18-lts'
+    }
+  }
+}
+```
+
+---
+
+**最終的なデプロイ成功例**:
+
+```bash
+# 修正後のデプロイ実行
+az deployment group create \
+  --resource-group rg-az400-handson \
+  --template-file infra/bicep/main.bicep \
+  --parameters infra/bicep/parameters/dev.parameters.json
+
+# 出力例:
+# {
+#   "properties": {
+#     "provisioningState": "Succeeded",
+#     "outputs": {
+#       "storageAccountName": "az400devst",
+#       "webAppName": "az400-dev-webapp",
+#       "keyVaultName": "az400-dev-kv"
+#     }
+#   }
+# }
+
+# デプロイ確認
+az resource list \
+  --resource-group rg-az400-handson \
+  --output table
+
+# 出力例:
+# Name                ResourceGroup        Type
+# ------------------  -------------------  -----------------------------------------
+# az400devst          rg-az400-handson     Microsoft.Storage/storageAccounts
+# az400-dev-ai        rg-az400-handson     Microsoft.Insights/components
+# az400-dev-asp       rg-az400-handson     Microsoft.Web/serverfarms
+# az400-dev-webapp    rg-az400-handson     Microsoft.Web/sites
+# az400-dev-kv        rg-az400-handson     Microsoft.KeyVault/vaults
+```
+
+**🎓 AZ-400試験対策ポイント**:
+
+| エラー種別 | 試験での出題ポイント | 解決アプローチ |
+|-----------|-------------------|--------------|
+| **循環依存** | Bicepモジュール間の依存関係設計 | パラメータ削減、デプロイ順序調整 |
+| **Quota超過** | リソースSKU選択、制限管理 | 無料枠活用、Quotaリクエスト |
+| **不変プロパティ** | Key Vault設計の制約理解 | プロパティ削除、新規作成 |
+| **SKU制限** | App Service Plan機能制限 | tierごとの機能比較表を暗記 |
+
+---
 
 #### 5.4 Commit & Push
 
