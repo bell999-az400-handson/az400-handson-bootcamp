@@ -102,15 +102,6 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-// シークレット作成（サンプル）
-resource secret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'DatabaseConnectionString'
-  properties: {
-    value: 'Server=tcp:sample.database.windows.net,1433;Database=mydb;'
-  }
-}
-
 output keyVaultName string = keyVault.name
 output keyVaultUri string = keyVault.properties.vaultUri
 ```
@@ -119,6 +110,7 @@ output keyVaultUri string = keyVault.properties.vaultUri
 - `enableRbacAuthorization: false` → Access Policies使用
 - `accessPolicies` → データプレーン権限（シークレット読み取り）
 - IAM（管理プレーン）は Azure Portal または Bicep の roleAssignment で設定
+- **🔒 シークレット値はBicepにハードコードしない**（後述の手順で安全に設定）
 
 #### 1.3 IAM設定（管理プレーン）
 
@@ -138,6 +130,377 @@ resource keyVaultRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04
   }
 }
 ```
+
+#### 1.4 シークレットの安全な設定（重要）
+
+**🔒 セキュリティベストプラクティス**:
+
+```bash
+# ❌ NG例: Bicepファイルにシークレット値をハードコード（絶対禁止）
+# resource secret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+#   properties: { value: 'my-secret-password-123' }  // 🚫 危険！
+# }
+
+# ✅ OK例: デプロイ後にAzure CLIで安全に設定
+```
+
+**手順1: Key Vaultデプロイ（シークレットなし）**
+
+```bash
+# Bicepデプロイ（シークレット値は含まない）
+az deployment group create \
+  --resource-group rg-az400-handson \
+  --template-file infra/bicep/main.bicep \
+  --parameters infra/bicep/parameters/dev.parameters.json
+
+# Key Vault名を取得
+KEY_VAULT_NAME=$(az deployment group show \
+  --resource-group rg-az400-handson \
+  --name main \
+  --query properties.outputs.keyVaultName.value -o tsv)
+
+echo "Key Vault名: $KEY_VAULT_NAME"
+```
+
+**手順2: Azure CLIでシークレットを安全に設定**
+
+```bash
+# 方法1: インタラクティブに入力（推奨）
+az keyvault secret set \
+  --vault-name $KEY_VAULT_NAME \
+  --name DatabaseConnectionString \
+  --value "$(read -sp 'DB接続文字列を入力: ' SECRET && echo $SECRET)"
+
+# 方法2: 環境変数から設定（CI/CDパイプライン用）
+az keyvault secret set \
+  --vault-name $KEY_VAULT_NAME \
+  --name ApiKey \
+  --value "$API_KEY_SECRET"  # GitHub Secrets等から注入
+
+# 方法3: ファイルから読み込み（.gitignore必須）
+az keyvault secret set \
+  --vault-name $KEY_VAULT_NAME \
+  --name SshPrivateKey \
+  --file ~/.ssh/id_rsa  # ファイル内容をシークレットとして保存
+```
+
+**手順3: 設定確認（値は表示しない）**
+
+```bash
+# シークレット一覧（値は表示されない）
+az keyvault secret list --vault-name $KEY_VAULT_NAME --output table
+
+# 特定シークレットの存在確認（値は表示しない）
+az keyvault secret show \
+  --vault-name $KEY_VAULT_NAME \
+  --name DatabaseConnectionString \
+  --query "name" -o tsv
+
+# ⚠️ 値を確認する場合（本番環境では慎重に）
+az keyvault secret show \
+  --vault-name $KEY_VAULT_NAME \
+  --name DatabaseConnectionString \
+  --query "value" -o tsv
+```
+
+**AZ-400試験ポイント**:
+
+| シナリオ | 正しい方法 | 誤った方法 |
+|---------|-----------|----------|
+| Bicepでのシークレット管理 | デプロイ後にCLI設定 | ❌ Bicepにハードコード |
+| GitHub Actionsからの設定 | GitHub Secrets → 環境変数 → az CLI | ❌ YAMLにパスワード記述 |
+| ローカル開発環境 | .env（.gitignore済） → CLI設定 | ❌ コミット可能なファイルに保存 |
+| CI/CDパイプライン | Variable Groups（暗号化） | ❌ パイプライン定義にプレーンテキスト |
+
+**セキュアパラメータの使用（代替案）**:
+
+```bicep
+// シークレット値を外部パラメータから受け取る場合
+@secure()
+param databaseConnectionString string = ''  // デフォルト空文字
+
+resource secret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = if (databaseConnectionString != '') {
+  parent: keyVault
+  name: 'DatabaseConnectionString'
+  properties: {
+    value: databaseConnectionString  // @secure()で保護
+  }
+}
+```
+
+```bash
+# パラメータファイルで渡す場合（.gitignore必須）
+az deployment group create \
+  --parameters databaseConnectionString="$DB_CONNECTION_STRING"
+```
+
+**Git管理のベストプラクティス**:
+
+```bash
+# .gitignoreに追加（必須）
+cat >> .gitignore << EOF
+# シークレット関連ファイル（絶対コミット禁止）
+*.secrets.json
+*.secrets.*.json
+.env
+.env.local
+**/appsettings.Development.json
+EOF
+
+# 既にコミット済みのシークレットを削除
+git rm --cached infra/bicep/parameters/*.secrets.json
+git commit -m "Remove secrets from git history"
+
+# git-secretsツールでシークレット検出（推奨）
+git secrets --install
+git secrets --register-aws  # AWSキー検出
+git secrets --add 'password|secret|key'
+```
+
+#### 1.5 セキュアスクリプトとCI/CDによる自動化（実践）
+
+**🎯 学習目標**:
+- セキュアなスクリプトによる自動化
+- GitHub Actionsでのシークレット管理
+- ローカル開発と本番環境のベストプラクティス
+
+---
+
+##### 方法1: セキュアBashスクリプト（ローカル開発用）
+
+**scripts/setup/set-keyvault-secrets.sh** を使用します。
+
+**セットアップ（Windows）**:
+
+```powershell
+# 1. Git Bashのインストール確認
+git --version
+
+# 2. スクリプトに実行権限を付与
+.\scripts\setup\setup.ps1
+
+# または手動で
+bash -c "chmod +x scripts/setup/set-keyvault-secrets.sh"
+```
+
+**実行手順**:
+
+```bash
+# 1. Azure CLIでログイン
+az login
+
+# 2. リソースグループを環境変数に設定
+export RESOURCE_GROUP="rg-az400-handson"
+
+# 3. スクリプトを実行
+./scripts/setup/set-keyvault-secrets.sh
+
+# または
+bash scripts/setup/set-keyvault-secrets.sh
+```
+
+**実行時の対話フロー**:
+
+```
+🔐 Azure Key Vault シークレット設定スクリプト
+================================================
+
+📋 Key Vault検出中...
+✅ Key Vault見つかりました: az400-dev-kv
+
+🔧 SQL Server情報を取得中...
+✅ SQL Server FQDN: az400-dev-sqlserver.database.windows.net
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+シークレット入力
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SQL管理者パスワードを入力: ************  ← 入力内容は非表示
+API Keyを入力 (スキップ可): ************
+
+✅ DatabaseConnectionString を設定しました
+✅ ApiKey を設定しました
+
+🔍 設定されたシークレット一覧（値は表示されません）:
+  - DatabaseConnectionString
+  - ApiKey
+
+✅ すべてのシークレット設定が完了しました！
+```
+
+**セキュリティ機能**:
+
+| 機能 | 実装 | 効果 |
+|------|------|------|
+| 履歴無効化 | `set +o history` | `.bash_history`に記録されない |
+| パスワード非表示 | `read -sp` | 入力時に画面に表示されない |
+| メモリクリア | `trap cleanup EXIT` | スクリプト終了時に変数削除 |
+| デバッグ無効 | `set +x` | パスワードがログに出力されない |
+| エラー処理 | カスタムハンドラー | エラーメッセージにシークレット含まない |
+| 出力抑制 | `--output none` | Azure CLIの出力にシークレット含まない |
+
+**詳細ドキュメント**: [scripts/setup/README.md](../../scripts/setup/README.md)
+
+---
+
+##### 方法2: GitHub Actions（本番環境推奨）
+
+**事前準備: GitHub Secretsの設定**
+
+詳細ガイド: [.github/GITHUB_SECRETS_SETUP.md](../../.github/GITHUB_SECRETS_SETUP.md)
+
+**必須シークレット**:
+
+```bash
+# 1. Azure認証情報を作成
+az ad sp create-for-rbac \
+  --name "github-actions-az400" \
+  --role contributor \
+  --scopes /subscriptions/<YOUR_SUBSCRIPTION_ID>/resourceGroups/rg-az400-handson \
+  --sdk-auth
+
+# 出力されたJSONをGitHub SecretsのAZURE_CREDENTIALSに設定
+```
+
+**GitHub Secrets一覧**:
+
+| シークレット名 | 説明 | 取得方法 |
+|-------------|------|---------|
+| `AZURE_CREDENTIALS` | Azure認証情報（JSON） | `az ad sp create-for-rbac --sdk-auth` |
+| `SQL_SERVER_FQDN` | SQL Server FQDN | `az sql server show --query fullyQualifiedDomainName` |
+| `SQL_DATABASE_NAME` | データベース名 | 例: `az400db` |
+| `SQL_ADMIN_USER` | SQL管理者名 | 例: `sqladmin` |
+| `SQL_ADMIN_PASSWORD` | SQL管理者パスワード | デプロイ時に設定した値 |
+| `API_KEY` | 外部APIキー（オプション） | サードパーティから取得 |
+
+**GitHub Secretsの設定方法**:
+
+1. **Web UIで設定**:
+   - リポジトリ → Settings → Secrets and variables → Actions
+   - "New repository secret" をクリック
+   - Name と Secret を入力して保存
+
+2. **GitHub CLIで設定**:
+
+```bash
+# GitHub CLIインストール確認
+gh --version
+
+# ログイン
+gh auth login
+
+# シークレットを設定
+gh secret set AZURE_CREDENTIALS < azure-credentials.json
+gh secret set SQL_SERVER_FQDN -b "az400-dev-sqlserver.database.windows.net"
+gh secret set SQL_DATABASE_NAME -b "az400db"
+gh secret set SQL_ADMIN_USER -b "sqladmin"
+gh secret set SQL_ADMIN_PASSWORD -b "YourSecurePassword123!"
+gh secret set API_KEY -b "your-api-key-here"
+
+# 確認
+gh secret list
+```
+
+**ワークフロー実行手順**:
+
+1. **GitHubリポジトリページに移動**
+2. **Actionsタブをクリック**
+3. **"Deploy Secrets to Key Vault"** ワークフローを選択
+4. **"Run workflow"** をクリック
+5. **環境を選択** (dev/staging/prod)
+6. **"Run workflow"** を実行
+
+**ワークフロー実行結果**:
+
+```
+Run workflow
+✅ Checkout code
+✅ Azure Login
+✅ Get Key Vault Name: az400-dev-kv
+✅ Set Database Connection String (Managed Identity)
+✅ Set API Key
+✅ Verify Secrets Set
+   - DatabaseConnectionString: ✅
+   - ApiKey: ✅
+
+✅ Workflow completed successfully
+```
+
+**ワークフロー定義**: [.github/workflows/deploy-secrets.yml](../../.github/workflows/deploy-secrets.yml)
+
+---
+
+##### 方法3: Azure CLIでの個別設定
+
+```bash
+# Key Vault名を取得
+KEY_VAULT_NAME=$(az deployment group show \
+  --resource-group rg-az400-handson \
+  --name main \
+  --query properties.outputs.keyVaultName.value -o tsv)
+
+# データベース接続文字列を自動生成
+SQL_SERVER_FQDN=$(az sql server show \
+  --name az400-dev-sqlserver \
+  --resource-group rg-az400-handson \
+  --query fullyQualifiedDomainName -o tsv)
+
+DB_CONNECTION_STRING="Server=tcp:${SQL_SERVER_FQDN},1433;Database=az400db;Authentication=Active Directory Default;Encrypt=true;TrustServerCertificate=false;"
+
+# シークレット設定
+az keyvault secret set \
+  --vault-name $KEY_VAULT_NAME \
+  --name DatabaseConnectionString \
+  --value "$DB_CONNECTION_STRING" \
+  --output none
+
+# API Key設定（対話的）
+read -sp 'API Keyを入力: ' API_KEY
+echo ""
+az keyvault secret set \
+  --vault-name $KEY_VAULT_NAME \
+  --name ApiKey \
+  --value "$API_KEY" \
+  --output none
+unset API_KEY
+
+# 確認（値は表示しない）
+az keyvault secret list --vault-name $KEY_VAULT_NAME --output table
+```
+
+---
+
+##### セキュリティベストプラクティスまとめ
+
+**✅ やるべきこと**:
+
+1. **ローカル開発**: セキュアスクリプト使用（`set-keyvault-secrets.sh`）
+2. **CI/CD**: GitHub Actions + GitHub Secrets使用
+3. **.gitignore**: `*.secrets.json`, `.env` を必ず追加
+4. **Access Policies**: データプレーン権限はAccess Policiesで設定
+5. **IAM**: 管理プレーン権限（Key Vault管理）はIAMで設定
+6. **Managed Identity**: SQL認証には `Authentication=Active Directory Default`
+7. **監査**: `git secrets` ツールでシークレット検出
+
+**❌ やってはいけないこと**:
+
+1. **Bicepにシークレットをハードコード**: `value: 'my-password'`
+2. **YAMLにパスワード記述**: `password: 'secret123'`
+3. **コミット可能なファイルにシークレット保存**: `config.json`
+4. **環境変数を残したまま**: `export PASSWORD=xxx` → `unset PASSWORD` 必須
+5. **デバッグ出力でシークレット表示**: `echo $PASSWORD`
+6. **プレーンテキストの接続文字列**: SQL認証 → Managed Identity使用
+
+**AZ-400試験重要ポイント**:
+
+| シナリオ | 正解 | 不正解 |
+|---------|------|--------|
+| Bicepでシークレット管理 | デプロイ後にCLI設定 | Bicepにハードコード |
+| GitHub Actionsでシークレット設定 | GitHub Secrets → 環境変数 | YAMLに直書き |
+| 複数環境のシークレット管理 | GitHub Environments使用 | 1つのシークレットを共有 |
+| SQL接続認証 | Managed Identity | ユーザー名/パスワード |
+| Key Vaultシークレット読み取り | Access Policies | IAM（間違い） |
+| Key Vault削除権限 | IAM | Access Policies（間違い） |
 
 ---
 

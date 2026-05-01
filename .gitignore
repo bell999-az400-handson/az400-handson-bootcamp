@@ -16,13 +16,22 @@ yarn-error.log*
 .eslintcache
 
 # Environment variables
+.env.*.local
+*.secrets.json
+*.secrets.*.json
 .env
 .env.local
-.env.*.local
+.env.production
+.env.development
+**/appsettings.Development.json
 
 # Logs
 logs/
 *.log
+
+# バックアップファイル
+*.bak
+*.backup
 
 # OS
 .DS_Store

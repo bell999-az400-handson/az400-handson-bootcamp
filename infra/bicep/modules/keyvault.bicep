@@ -50,24 +50,22 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-// 🔒 セキュリティ注意: 以下はハンズオン学習用のサンプルシークレットです
-// 本番環境では、シークレット値をBicepファイルにハードコードしないでください
-// 推奨: Azure Portal、Azure CLI、または secure parameters を使用
+// 🔒 セキュリティベストプラクティス:
+// シークレット値はBicepファイルにハードコードしません
+// デプロイ後に Azure CLI または Azure Portal を使用して安全に設定してください
+// 手順は docs/handson/day2-azure-security.md の「1.4 シークレットの安全な設定」を参照
 
-// サンプルシークレット
-resource sampleSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'DatabaseConnectionString'
-  properties: {
-    value: 'Server=tcp:sample.${environment().suffixes.sqlServerHostname},1433;Database=sampledb;User ID=admin;Password=P@ssw0rd;Encrypt=true;'
-  }
-}
+// 管理プレーン権限: IAM（RBAC）
+// Key Vault Administrator ロールを Managed Identity に付与
+var keyVaultAdministratorRole = '00482a5a-887f-4fb3-b363-3b7fe8e74483'
 
-resource apiKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: keyVault
-  name: 'ApiKey'
+resource keyVaultRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, managedIdentityObjectId, keyVaultAdministratorRole)
+  scope: keyVault
   properties: {
-    value: 'sample-api-key-12345'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultAdministratorRole)
+    principalId: managedIdentityObjectId
+    principalType: 'ServicePrincipal'
   }
 }
 
