@@ -1436,6 +1436,207 @@ az keyvault secret list --vault-name $KEY_VAULT_NAME --output table
 
 ---
 
+#### ステップ 1-4: CI/CDパイプラインでのACR連携（セキュアなDocker push）
+
+GitHub ActionsからAzure Container Registry (ACR)にDockerイメージをpushする際、**セキュアな認証方法**を実装します。
+
+##### 🎯 学習目標
+
+- ✅ Azure CLI認証とACR連携の理解
+- ✅ Managed Identity原則の適用（Admin password使用を避ける）
+- ✅ RBACベースのACRアクセス制御
+- ✅ GitHub Secretsの最小化（1つのAZURE_CREDENTIALSのみ使用）
+
+---
+
+##### 🔐 セキュアなACR認証方式
+
+**従来の方法（❌ 非推奨）**:
+```yaml
+# Admin Usernameとパスワードを使用（セキュリティリスク）
+- name: Login to ACR
+  uses: docker/login-action@v4
+  with:
+    registry: ${{ secrets.ACR_LOGIN_SERVER }}
+    username: ${{ secrets.ACR_USERNAME }}    # ❌ Admin password
+    password: ${{ secrets.ACR_PASSWORD }}    # ❌ 平文で保存
+```
+
+**推奨方法（✅ ベストプラクティス）**:
+```yaml
+# Azure CLI経由でトークンベース認証（パスワードレス）
+- name: Azure Login
+  uses: azure/login@v3
+  with:
+    creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+- name: Login to Azure Container Registry
+  run: |
+    az acr login --name az400acr
+```
+
+---
+
+##### 📄 CI/CDワークフローファイル
+
+ワークフローファイル: [.github/workflows/ci-github-actions.yml](../../.github/workflows/ci-github-actions.yml)
+
+**主要な処理フロー**:
+
+```yaml
+name: CI with GitHub Actions
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  WORKING_DIRECTORY: ./src/webapp
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      # ステップ 1: Azure CLIでログイン（AZURE_CREDENTIALSを使用）
+      - name: Azure Login
+        uses: azure/login@v3
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      # ステップ 2: ACRにログイン（パスワードレス認証）
+      - name: Login to Azure Container Registry
+        run: |
+          az acr login --name az400acr
+      
+      # ステップ 3: Dockerイメージのビルドとプッシュ
+      - name: Build and push Docker image
+        run: |
+          docker build -t az400acr.azurecr.io/az400webapp:${{ github.sha }} \
+                       -t az400acr.azurecr.io/az400webapp:latest \
+                       ${{ env.WORKING_DIRECTORY }}
+          docker push az400acr.azurecr.io/az400webapp:${{ github.sha }}
+          docker push az400acr.azurecr.io/az400webapp:latest
+      
+      # ステップ 4: セキュリティスキャン（Trivy）
+      - name: Image scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: az400acr.azurecr.io/az400webapp:${{ github.sha }}
+```
+
+---
+
+##### 🔧 必要な権限設定
+
+Service PrincipalにACR push権限を付与する必要があります。
+
+```powershell
+# ACRリソースIDを取得
+$ACR_ID = az acr show `
+  --name az400acr `
+  --resource-group rg-az400-handson `
+  --query id -o tsv
+
+# Service Principal App IDを取得
+# （AZURE_CREDENTIALSのclientIdまたはAzure Portalで確認）
+$SP_APP_ID = "<Service-Principal-App-ID>"
+
+# AcrPushロールを付与（Dockerイメージのpush権限）
+az role assignment create `
+  --assignee $SP_APP_ID `
+  --role AcrPush `
+  --scope $ACR_ID
+```
+
+**確認**:
+```powershell
+# ロール割り当ての確認
+az role assignment list --scope $ACR_ID --output table
+```
+
+---
+
+##### 📊 セキュリティ比較
+
+| 項目 | Admin Password方式 | Azure CLI方式（推奨） |
+|------|-------------------|---------------------|
+| **認証方法** | Username/Password（平文） | ✅ Azure ADトークン（期限付き） |
+| **必要なSecrets** | 3つ（LOGIN_SERVER, USERNAME, PASSWORD） | ✅ **1つ**（AZURE_CREDENTIALS） |
+| **パスワードローテーション** | 手動で必要 | ✅ 自動管理 |
+| **権限スコープ** | Admin（全権限） | ✅ AcrPush（最小権限） |
+| **監査ログ** | Admin userとして記録 | ✅ Service Principal IDで追跡可能 |
+| **セキュリティリスク** | ❌ パスワード漏洩リスク | ✅ トークンベース（短命） |
+| **AZ-400対応** | 一部対応 | ✅ **ベストプラクティス** |
+
+---
+
+##### ✅ ワークフロー実行と確認
+
+1. **コードをpushまたはPR作成**:
+   ```bash
+   git add .
+   git commit -m "Update CI workflow for secure ACR login"
+   git push origin main
+   ```
+
+2. **GitHub Actionsの実行確認**:
+   - GitHubリポジトリ → Actionsタブ
+   - "CI with GitHub Actions"ワークフローを選択
+   - 実行ログを確認
+
+3. **期待される出力**:
+   ```
+   ✅ Checkout code
+   ✅ Azure Login (using AZURE_CREDENTIALS)
+   ✅ Login to Azure Container Registry
+      Login Succeeded
+   ✅ Build and push Docker image
+      Successfully built abc123def456
+      Successfully tagged az400acr.azurecr.io/az400webapp:abc123
+      Successfully tagged az400acr.azurecr.io/az400webapp:latest
+      Pushing az400acr.azurecr.io/az400webapp:abc123... Done
+      Pushing az400acr.azurecr.io/az400webapp:latest... Done
+   ✅ Image scan (Trivy)
+      0 vulnerabilities found
+   ```
+
+4. **ACRでイメージ確認**:
+   ```bash
+   az acr repository list --name az400acr --output table
+   az acr repository show-tags --name az400acr --repository az400webapp --output table
+   ```
+
+---
+
+##### 🎓 AZ-400試験ポイント
+
+| シナリオ | 正解 | 不正解 |
+|---------|------|--------|
+| ACRへのCI/CD認証 | Azure CLI + Service Principal | ❌ Admin password |
+| 最小権限の原則 | AcrPushロール | ❌ Contributor/Owner |
+| GitHub Secretsの最小化 | AZURE_CREDENTIALS 1つ | ❌ 複数のパスワードSecrets |
+| パスワード管理 | トークンベース自動管理 | ❌ 手動ローテーション |
+| 監査とトレーサビリティ | Service Principal ID追跡 | ❌ 共有Admin user |
+
+**よくある間違い**:
+- ❌ ACR Admin Userを有効化してパスワード使用
+- ❌ `ACR_USERNAME`/`ACR_PASSWORD` Secretsを設定
+- ❌ ContributorロールをACR全体に付与（過剰権限）
+
+**ベストプラクティス**:
+- ✅ `az acr login`でパスワードレス認証
+- ✅ Service PrincipalにAcrPushロールのみ付与
+- ✅ 既存の`AZURE_CREDENTIALS` Secretを再利用
+- ✅ トークンベース認証で監査ログを個別追跡
+
+---
+
 ### ステップ 2: Managed Identity実装（90分）
 
 #### 2.1 system-assigned vs user-assigned 理解
