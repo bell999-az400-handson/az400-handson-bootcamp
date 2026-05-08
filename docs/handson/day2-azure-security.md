@@ -1285,7 +1285,7 @@ jobs:
     
     # Azure認証（方法A: AZURE_CREDENTIALS使用）
     - name: Azure Login
-      uses: azure/login@v3
+      uses: azure/login@v2
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
     
@@ -1466,7 +1466,7 @@ GitHub ActionsからAzure Container Registry (ACR)にDockerイメージをpush�
 ```yaml
 # Azure CLI経由でトークンベース認証（パスワードレス）
 - name: Azure Login
-  uses: azure/login@v3
+  uses: azure/login@v2
   with:
     creds: ${{ secrets.AZURE_CREDENTIALS }}
 
@@ -1508,11 +1508,11 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       # ステップ 1: Azure CLIでログイン（AZURE_CREDENTIALSを使用）
       - name: Azure Login
-        uses: azure/login@v3
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
