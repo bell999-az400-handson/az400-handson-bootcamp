@@ -32,10 +32,32 @@ jobs:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           images: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
       
+      - name: Verify deployment
+        run: |
+          echo "📋 Checking deployment status..."
+          STATE=$(az webapp show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query state -o tsv)
+          echo "App state: $STATE"
+          
+          echo "🐳 Checking container configuration..."
+          az webapp config container show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }}
+      
       - name: Smoke test
         run: |
-          sleep 30
-          curl -f https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health || exit 1
+          echo "Waiting for container to start..."
+          # 最大2分間、10秒ごとにリトライ
+          for i in {1..12}; do
+            echo "Health check attempt $i/12..."
+            if curl -f --max-time 10 https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health; then
+              echo "✓ Health check passed"
+              exit 0
+            fi
+            if [ $i -lt 12 ]; then
+              echo "Waiting 10 seconds before retry..."
+              sleep 10
+            fi
+          done
+          echo "✗ Health check failed after 12 attempts (2 minutes)"
+          exit 1
       
       - name: Notification
         if: always()
@@ -65,8 +87,20 @@ jobs:
       - name: Run integration tests
         run: |
           echo "Running integration tests..."
-          sleep 30
-          curl -f https://az400-staging-webapp.azurewebsites.net/health || exit 1
+          # 最大2分間、10秒ごとにリトライ
+          for i in {1..12}; do
+            echo "Health check attempt $i/12..."
+            if curl -f --max-time 10 https://az400-staging-webapp.azurewebsites.net/health; then
+              echo "✓ Health check passed"
+              exit 0
+            fi
+            if [ $i -lt 12 ]; then
+              echo "Waiting 10 seconds before retry..."
+              sleep 10
+            fi
+          done
+          echo "✗ Health check failed after 12 attempts (2 minutes)"
+          exit 1
       
       - name: Notification
         if: always()
@@ -95,8 +129,21 @@ jobs:
       
       - name: Production smoke test
         run: |
-          sleep 30
-          curl -f https://az400-prod-webapp.azurewebsites.net/health || exit 1
+          echo "Waiting for production container to start..."
+          # 最大2分間、10秒ごとにリトライ
+          for i in {1..12}; do
+            echo "Health check attempt $i/12..."
+            if curl -f --max-time 10 https://az400-prod-webapp.azurewebsites.net/health; then
+              echo "✓ Production health check passed"
+              exit 0
+            fi
+            if [ $i -lt 12 ]; then
+              echo "Waiting 10 seconds before retry..."
+              sleep 10
+            fi
+          done
+          echo "✗ Production health check failed after 12 attempts (2 minutes)"
+          exit 1
       
       - name: Notify deployment
         run: |
