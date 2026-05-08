@@ -19,26 +19,13 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
       name: 'standard'
     }
     tenantId: tenantId
-    enableRbacAuthorization: false  // Access Policies使用
+    enableRbacAuthorization: true   // ✅ Azure RBAC使用（Microsoft推奨）
     enableSoftDelete: true
     softDeleteRetentionInDays: 7
     // enablePurgeProtection は削除（一度有効化すると無効化不可のため）
     
-    // データプレーン権限: Access Policies
-    accessPolicies: [
-      {
-        tenantId: tenantId
-        objectId: managedIdentityObjectId
-        permissions: {
-          secrets: [
-            'get'
-            'list'
-          ]
-          keys: []
-          certificates: []
-        }
-      }
-    ]
+    // データプレーン権限は Access Policies ではなく Azure RBAC で管理
+    // accessPolicies は使用しない（RBAC有効化時は不要）
     
     // 🔒 セキュリティ: ネットワークアクセス制限
     // 本番環境では defaultAction: 'Deny' を推奨
@@ -55,11 +42,29 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
 // デプロイ後に Azure CLI または Azure Portal を使用して安全に設定してください
 // 手順は docs/handson/day2-azure-security.md の「1.4 シークレットの安全な設定」を参照
 
-// 管理プレーン権限: IAM（RBAC）
-// Key Vault Administrator ロールを Managed Identity に付与
+// ============================================
+// Azure RBAC ロール割り当て（データプレーン + 管理プレーン）
+// ============================================
+
+// データプレーン権限: Key Vault Secrets User
+// シークレットの読み取り専用アクセス（get, list）
+var keyVaultSecretsUserRole = '4633458b-17de-408a-b874-0445c86b69e6'
+
+resource keyVaultSecretsRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, managedIdentityObjectId, keyVaultSecretsUserRole)
+  scope: keyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRole)
+    principalId: managedIdentityObjectId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// 管理プレーン権限: Key Vault Administrator
+// Key Vault自体の管理権限（RBAC設定、診断設定等）
 var keyVaultAdministratorRole = '00482a5a-887f-4fb3-b363-3b7fe8e74483'
 
-resource keyVaultRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource keyVaultAdminRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, managedIdentityObjectId, keyVaultAdministratorRole)
   scope: keyVault
   properties: {

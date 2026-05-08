@@ -1458,6 +1458,67 @@ az keyvault secret list --vault-name $KEY_VAULT_NAME --output table
 
 ---
 
+#### 2.1.5 Key Vault 権限モデル: Access Policies vs Azure RBAC 🔒
+
+**Microsoft Defender for Cloud** が推奨する権限モデルの違いを理解します。
+
+##### 📊 比較表（AZ-400 頻出）
+
+| 項目 | Access Policies（レガシー） | Azure RBAC（✅ 推奨） |
+|------|---------------------------|---------------------|
+| **有効化方法** | `enableRbacAuthorization: false` | `enableRbacAuthorization: true` |
+| **権限設定場所** | `accessPolicies` プロパティ | Azure RBAC ロール |
+| **適用範囲** | Key Vault内のデータのみ | Key Vault全体 + データ |
+| **権限粒度** | 粗い（get/list/set等） | 細かい（条件付きも可） |
+| **Azure ADグループ統合** | 手動管理 | ネイティブ統合 ✅ |
+| **条件付きアクセス** | 不可 | 可能 ✅ |
+| **Microsoft推奨** | ❌ レガシー | ✅ **最新推奨** |
+| **Defender アラート** | ⚠️ 警告が出る | ✅ 推奨に準拠 |
+
+##### 🎯 本ハンズオンの実装方式
+
+**Azure RBAC方式を採用** - Microsoft Defender for Cloud のセキュリティ推奨に準拠
+
+```bicep
+// infra/bicep/modules/keyvault.bicep
+enableRbacAuthorization: true   // ✅ Azure RBAC使用
+
+// データプレーン権限: Key Vault Secrets User（読み取り専用）
+var keyVaultSecretsUserRole = '4633458b-17de-408a-b874-0445c86b69e6'
+
+// 管理プレーン権限: Key Vault Administrator（管理者）
+var keyVaultAdministratorRole = '00482a5a-887f-4fb3-b363-3b7fe8e74483'
+```
+
+##### 📚 主要なKey Vault RBAC ロール
+
+| ロール名 | ロールID | 権限内容 | 使用ケース |
+|---------|---------|---------|----------|
+| **Key Vault Administrator** | `00482a5a-...` | すべての操作 | 管理者用 |
+| **Key Vault Secrets User** | `4633458b-...` | シークレット読み取り | アプリケーション用 ✅ |
+| **Key Vault Secrets Officer** | `b86a8fe4-...` | シークレット読み書き | CI/CD用 |
+| **Key Vault Reader** | `21090545-...` | メタデータのみ | 監査用 |
+
+##### 🔍 試験ひっかけポイント
+
+**Q**: "Web AppがKey Vaultのシークレットを読むだけなら？"  
+**A**: `Key Vault Secrets User` ロール（最小権限の原則）
+
+**Q**: "GitHub ActionsでシークレットをKey Vaultに書き込むなら？"  
+**A**: `Key Vault Secrets Officer` ロール
+
+**Q**: "Access Policies と Azure RBAC は併用できる？"  
+**A**: ❌ できない。`enableRbacAuthorization: true` の場合、Access Policiesは無視される
+
+##### 🛡️ セキュリティベストプラクティス
+
+1. ✅ **Azure RBAC方式を使用** - Microsoft推奨
+2. ✅ **最小権限の原則** - 必要最低限のロールを付与
+3. ✅ **Managed Identity使用** - パスワード不要
+4. ✅ **定期的な権限レビュー** - 不要な権限を削除
+
+---
+
 #### 2.2 Bicepモジュール定義: Web App (system-assigned)
 
 **目的**: Web Appにsystem-assigned Managed Identityを有効化するBicepモジュールを定義します。
@@ -1612,13 +1673,55 @@ az webapp identity show `
   --query principalId -o tsv
 ```
 
+**Azure RBAC ロール割り当て確認**:
+
+```powershell
+# Key Vault のリソースIDを取得
+$KV_ID = az keyvault show `
+  --name az400-dev-kv `
+  --resource-group rg-az400-handson `
+  --query id -o tsv
+
+# RBAC ロール割り当て確認
+az role assignment list `
+  --scope $KV_ID `
+  --query "[].{Role:roleDefinitionName, Principal:principalName, Type:principalType}" `
+  --output table
+```
+
+**期待される出力**:
+```
+Role                          Principal            Type
+----------------------------  -------------------  ----------------
+Key Vault Secrets User        az400-dev-webapp     ServicePrincipal
+Key Vault Administrator       az400-dev-webapp     ServicePrincipal
+```
+
+**確認ポイント**:
+- ✅ `Key Vault Secrets User` が付与されている（シークレット読み取り権限）
+- ✅ `Key Vault Administrator` が付与されている（管理権限）
+- ✅ `PrincipalType` が `ServicePrincipal`（Managed Identity）
+
+**🛡️ Microsoft Defender for Cloud アラート解消確認**:
+
+このデプロイにより、以下のセキュリティ推奨が適用されました：
+- ✅ Azure RBAC方式を使用（Access Policies から移行）
+- ✅ 最小権限の原則（必要なロールのみ付与）
+- ✅ Managed Identity認証（パスワード不要）
+
+> 💡 **Note**: Defender for Cloud のアラートが消えるまで最大24時間かかる場合があります。
+
 ---
 
 ## 📋 午後セッション（2-3時間）
 
 ### ステップ 3: Application Insights統合（90分）
 
-#### 3.1 Application Insights Bicep
+#### 3.1 Bicepモジュール定義: Application Insights
+
+**目的**: Application Insightsリソースを定義するBicepモジュールを作成します。
+
+> ⚠️ **注意**: このセクションではファイルを**作成**します。デプロイは **3.3** で実行します。
 
 **infra/bicep/modules/appinsights.bicep**:
 
@@ -1646,7 +1749,19 @@ output instrumentationKey string = appInsights.properties.InstrumentationKey
 output connectionString string = appInsights.properties.ConnectionString
 ```
 
-#### 3.2 サンプルWebアプリ実装
+**ポイント**:
+- `kind: 'web'`: Webアプリケーション用のApplication Insights
+- `RetentionInDays: 30`: テレメトリデータの保持期間（30日間）
+- `connectionString`: アプリケーションから接続するための接続文字列（3.2で使用）
+- このファイルは **3.3でデプロイ** します
+
+---
+
+#### 3.2 Webアプリケーション実装
+
+**目的**: Application Insightsと統合したNode.js Webアプリケーションを実装します。
+
+> ⚠️ **注意**: このセクションではファイルを**作成**します。デプロイは **3.3** で実行します。
 
 **src/webapp/app.js**:
 
@@ -1716,6 +1831,31 @@ app.listen(port, () => {
 });
 ```
 
+**実装内容の説明**:
+
+このWebアプリケーションは、**Application Insights**と**Key Vault**の統合を実証する3つのエンドポイントを提供します。
+
+| エンドポイント | 機能 | Application Insights連携 |
+|--------------|------|------------------------|
+| **`GET /`** | ホームページ | ✅ カスタムイベント（`HomePage_Accessed`）<br>✅ カスタムメトリクス（`HomePage_ResponseTime`） |
+| **`GET /secret`** | Key Vaultからシークレット取得<br>（Managed Identity認証） | ✅ カスタムイベント（`Secret_Retrieved`）<br>✅ 例外追跡（エラー時） |
+| **`GET /health`** | ヘルスチェック | - |
+
+**技術的ポイント**:
+1. **Application Insights SDK統合**:
+   - `appInsights.setup(connectionString)`: 環境変数から接続文字列を取得して初期化
+   - `trackEvent()`: カスタムイベント送信（ユーザー操作追跡）
+   - `trackMetric()`: カスタムメトリクス送信（パフォーマンス測定）
+   - `trackException()`: 例外追跡（エラー分析）
+
+2. **Managed Identity認証**:
+   - `DefaultAzureCredential`: Azure環境で自動的にManaged Identityを使用
+   - `SecretClient`: Key Vaultからシークレットを取得（パスワード不要）
+
+3. **セキュリティ設計**:
+   - `/secret` エンドポイントは取得成功のみ返し、実際のシークレット値は返さない
+   - 環境変数経由で認証情報を注入（コードにハードコーディングしない）
+
 **src/webapp/package.json**:
 
 ```json
@@ -1760,34 +1900,111 @@ EXPOSE 3000
 CMD ["npm", "start"]
 ```
 
-#### 3.3 デプロイ
+**ポイント**:
+- `appInsights.setup(connectionString)`: Application Insights SDKの初期化
+- `DefaultAzureCredential`: Managed IdentityでKey Vaultに認証
+- `SecretClient`: Key Vaultからシークレットを取得
+- Dockerfileでマルチステージビルド（本番依存関係のみインストール）
+- **次の3.3でデプロイ** します
+
+---
+
+#### 3.3 デプロイ実行（3.1・3.2をAzureに適用）
+
+**目的**: 3.1で定義したApplication Insightsと3.2で実装したWebアプリをAzureにデプロイします。
+
+**デプロイ内容**:
+- ✅ Application Insights（テレメトリ収集）
+- ✅ Dockerイメージビルド & Azure Container Registry（ACR）へプッシュ
+- ✅ Web AppへのコンテナデプロイHubからシークレット取得可能
+
+> ⚠️ **前提条件**: Docker Desktopが起動していることを確認してください。  
+> 起動していない場合: `Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"` で起動後、30-60秒待機してください。  
+> 確認コマンド: `docker version`
+
+**実行コマンド**:
 
 ```powershell
-# 依存関係インストール
+# ========================================
+# 1. 依存関係インストール
+# ========================================
 cd src/webapp
 npm install
 
-# Dockerイメージビルド
+# ========================================
+# 2. Dockerイメージビルド（3.2のアプリをコンテナ化）
+# ========================================
 docker build -t az400webapp:latest .
 
-# Azure Container Registry作成（事前準備）
-az acr create --name az400acr --resource-group rg-az400-handson --sku Basic
+# ========================================
+# 3. Azure Container Registry作成
+# ========================================
+az acr create `
+  --name az400acr `
+  --resource-group rg-az400-handson `
+  --sku Basic `
+  --admin-enabled true
 
-# ACRにプッシュ
+# ========================================
+# 4. ACRにイメージをプッシュ
+# ========================================
 az acr login --name az400acr
 docker tag az400webapp:latest az400acr.azurecr.io/az400webapp:latest
 docker push az400acr.azurecr.io/az400webapp:latest
 
-# Web Appにデプロイ
+Write-Host "✅ Dockerイメージをプッシュしました" -ForegroundColor Green
+
+# ========================================
+# 5. Web AppにコンテナをデプロイHubにデプロイ
+# ========================================
+$ACR_USERNAME = az acr credential show --name az400acr --query username -o tsv
+$ACR_PASSWORD = az acr credential show --name az400acr --query "passwords[0].value" -o tsv
+
 az webapp config container set `
   --name az400-dev-webapp `
   --resource-group rg-az400-handson `
-  --docker-custom-image-name az400acr.azurecr.io/az400webapp:latest
+  --docker-custom-image-name az400acr.azurecr.io/az400webapp:latest `
+  --docker-registry-server-url https://az400acr.azurecr.io `
+  --docker-registry-server-user $ACR_USERNAME `
+  --docker-registry-server-password $ACR_PASSWORD
+
+# Web App再起動
+az webapp restart --name az400-dev-webapp --resource-group rg-az400-handson
+
+Write-Host "✅ Web Appにデプロイ完了" -ForegroundColor Green
+Write-Host "🌐 URL: https://az400-dev-webapp.azurewebsites.net" -ForegroundColor Cyan
+```
+
+**確認ポイント**:
+- ✅ Dockerイメージがビルドされている
+- ✅ ACRにイメージがプッシュされている
+- ✅ Web AppがACRからイメージをプルしてデプロイされている
+- ✅ Application InsightsにテレメトリHubにテレメトリが送信されている（次のステップ4で確認）
+
+**動作確認**:
+```powershell
+# ヘルスチェック
+Invoke-RestMethod -Uri "https://az400-dev-webapp.azurewebsites.net/health"
+
+# シークレット取得テスト（Managed Identity動作確認）
+Invoke-RestMethod -Uri "https://az400-dev-webapp.azurewebsites.net/secret"
 ```
 
 ---
 
 ### ステップ 4: KQL実践（60分）
+
+**実施場所**: Azure Portal → Application Insights → Logs（ログ）
+
+**実施方法**:
+1. **Azure Portalにアクセス**: [https://portal.azure.com](https://portal.azure.com)
+2. **Application Insightsを開く**: リソースグループ `rg-az400-handson` → `az400-dev-ai`
+3. **Logsを開く**: 左メニュー「監視」セクション → **Logs（ログ）**
+4. **KQLクエリを実行**: 下記のクエリをコピー&ペーストして「実行」ボタンをクリック
+
+> 💡 **ヒント**: `scripts/kql/basic-queries.kql` からクエリをコピーして、Azure Portal上で1つずつ実行してください。
+
+---
 
 #### 4.1 基本クエリ
 
@@ -1862,6 +2079,34 @@ requests
 | project timestamp, name, RequestCount, AvgDuration, P95Duration
 | order by timestamp desc
 ```
+
+---
+
+**各クエリの解説**:
+
+| # | クエリ名 | 指示内容 | 結果の見方 |
+|---|---------|---------|----------|
+| **1️⃣** | **時間集計: bin()** | 過去24時間のリクエストを1時間ごとに集計 | **時系列グラフ**: 横軸=時刻、縦軸=リクエスト数<br>💡 トラフィックのピーク時間帯を特定 |
+| **2️⃣** | **カラム追加: extend** | `duration`カラムを`duration_ms`として複製<br>（既存カラムはそのまま残る） | **テーブル**: timestamp, name, duration_ms, success<br>💡 元の`duration`も残っている（extendの特性） |
+| **3️⃣** | **カラム選択: project** | timestamp, url, resultCode, durationのみ表示 | **テーブル**: 指定した4カラムのみ<br>💡 他のカラムは非表示（projectの特性） |
+| **4️⃣** | **パーセンタイル** | 過去1時間のレスポンスタイムを50/95/99パーセンタイルで集計 | **1行の結果**:<br>• Median（中央値）: 50%のリクエストがこの時間以内<br>• P95: 95%のリクエストがこの時間以内<br>• P99: 99%のリクエストがこの時間以内<br>💡 **P95が試験頻出** |
+| **5️⃣** | **エラー率計算** | 過去1時間の総リクエスト数、エラー数、エラー率を計算 | **1行の結果**:<br>• TotalRequests: 100<br>• ErrorCount: 5<br>• ErrorRate: 5.0（%）<br>💡 SLO監視に使用 |
+| **6️⃣** | **カスタムイベント集計** | `HomePage_Accessed`イベントを1時間ごとに集計 | **時系列グラフ**: ホームページアクセス数の推移<br>💡 3.2で実装した`trackEvent()`の結果を可視化 |
+| **7️⃣** | **例外分析** | 過去24時間の例外をメッセージ別に集計、多い順にソート | **テーブル**: 例外メッセージと発生回数<br>💡 最も頻繁に発生するエラーを特定 |
+| **8️⃣** | **複雑なクエリ** | 5分間隔で、エンドポイント別にリクエスト数、平均時間、P95を集計 | **テーブル**: timestamp, name（エンドポイント）, RequestCount, AvgDuration, P95Duration<br>💡 エンドポイントごとのパフォーマンス監視 |
+
+---
+
+**実行時の注意点**:
+
+| ポイント | 説明 |
+|---------|------|
+| **データがない場合** | クエリ実行前に、Web Appにアクセス（`Invoke-RestMethod`）してテレメトリを生成してください |
+| **時間範囲** | `ago(1h)` = 過去1時間、`ago(24h)` = 過去24時間 |
+| **グラフ vs テーブル** | `render timechart`がある→時系列グラフ表示<br>ない→テーブル表示 |
+| **AZ-400試験対策** | クエリ **4️⃣（パーセンタイル）** と **5️⃣（エラー率）** が頻出 |
+
+---
 
 #### 4.2 試験頻出ポイント
 
