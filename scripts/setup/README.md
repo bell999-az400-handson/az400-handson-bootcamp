@@ -1,10 +1,11 @@
-# Key Vault シークレット設定スクリプト
+# セットアップスクリプト
 
-このディレクトリには、Azure Key Vaultにシークレットを安全に設定するためのスクリプトが含まれています。
+このディレクトリには、Azure Key VaultとGitHub Secretsを安全に設定するためのスクリプトが含まれています。
 
 ## 📋 ファイル一覧
 
 - `set-keyvault-secrets.sh` - Key Vaultシークレット設定スクリプト（Bash）
+- `setup-github-secrets.ps1` - GitHub Secrets設定スクリプト（PowerShell）
 
 ## 🔐 セキュリティ機能
 
@@ -47,7 +48,7 @@ export RESOURCE_GROUP="rg-az400-handson"
 export SQL_SERVER_NAME="az400-dev-sqlserver"
 export SQL_DATABASE_NAME="az400db"
 export SQL_ADMIN_USER="sqladmin"
-export API_KEY="your-api-key-here"
+export API_KEY="demo-api-key-12345-for-learning"
 
 # 実行
 ./scripts/setup/set-keyvault-secrets.sh
@@ -150,8 +151,134 @@ Forbidden
 
 GitHub Actions での使用方法は、`.github/workflows/deploy-secrets.yml` を参照してください。
 
+---
+
+## 🔐 GitHub Secrets設定スクリプト
+
+### setup-github-secrets.ps1
+
+GitHub Secretsを対話的に設定するPowerShellスクリプトです。
+
+#### 前提条件
+
+- GitHub CLI (`gh`) インストール済み
+- GitHub CLIでログイン済み (`gh auth login`)
+- Azure Credentialsファイル作成済み（下記手順参照）
+
+**Azure Credentialsファイルの作成**:
+
+```powershell
+# 1. サブスクリプションIDを取得
+$SUBSCRIPTION_ID = az account show --query id -o tsv
+
+# 2. サービスプリンシパルを作成してクリップボードにコピー（🔒 推奨）
+az ad sp create-for-rbac `
+  --name "github-actions-az400" `
+  --role contributor `
+  --scopes "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/rg-az400-handson" `
+  --sdk-auth | Set-Clipboard
+
+Write-Host "✅ Azure認証情報をクリップボードにコピーしました" -ForegroundColor Green
+Write-Host "⚠️ セキュリティ重要: ファイルに保存せず、直接GitHub Secretsに設定してください" -ForegroundColor Yellow
+```
+
+#### 使用方法
+
+```powershell
+# スクリプトを実行
+cd scripts/setup
+.\setup-github-secrets.ps1
+```
+
+#### セキュリティ機能
+
+✅ **実装済みのセキュリティ対策:**
+
+1. **クリップボード経由** - ファイルを作成せず、メモリ上で処理（🔒 最重要）
+2. **自動クリア** - 設定後にクリップボードを自動的にクリア
+3. **SecureString使用** - パスワード入力時にマスキング
+4. **対話的入力** - コマンド履歴に残らない
+5. **スキップ可能** - Enterキーで不要な項目をスキップ
+6. **設定確認** - 最後に設定されたシークレット一覧を表示（値は非表示）
+
+🚫 **絶対にしてはいけないこと:**
+- JSONファイルをリポジトリに作成
+- 認証情報をコミット
+- パスワードをコマンド引数で渡す
+
+#### 設定されるGitHub Secrets
+
+| Secret名 | 説明 | 必須 |
+|---------|------|------|
+| `AZURE_CREDENTIALS` | Azureサービスプリンシパル（JSON） | ✅ |
+| `SQL_SERVER_FQDN` | SQL Server完全修飾ドメイン名 | SQL使用時 |
+| `SQL_DATABASE_NAME` | データベース名 | SQL使用時 |
+| `SQL_ADMIN_USER` | SQL管理者ユーザー名 | SQL使用時 |
+| `SQL_ADMIN_PASSWORD` | SQL管理者パスワード | SQL使用時 |
+| `API_KEY` | 外部APIキー（学習用） | デモ値: `demo-api-key-12345-for-learning` |
+
+#### 実行例
+
+```powershell
+PS> .\setup-github-secrets.ps1
+
+🔐 GitHub Secrets を設定します
+
+📋 ステップ1でクリップボードにコピーした Azure認証情報を使用します
+クリップボードから設定しますか？ (y/n, Enter でスキップ): y
+✅ AZURE_CREDENTIALS を設定しました
+🔒 クリップボードをクリアしました
+
+SQL Server FQDN (Enter でスキップ): az400-dev-sqlserver.database.windows.net
+✅ SQL_SERVER_FQDN を設定しました
+
+SQL Database名 (Enter でスキップ): az400db
+✅ SQL_DATABASE_NAME を設定しました
+
+SQL管理者ユーザー名 (Enter でスキップ): sqladmin
+✅ SQL_ADMIN_USER を設定しました
+
+SQL管理者パスワード (Enter でスキップ): ************
+✅ SQL_ADMIN_PASSWORD を設定しました
+
+🔍 設定されたシークレット一覧:
+AZURE_CREDENTIALS  Updated 2026-05-05
+SQL_SERVER_FQDN    Updated 2026-05-05
+SQL_DATABASE_NAME  Updated 2026-05-05
+SQL_ADMIN_USER     Updated 2026-05-05
+SQL_ADMIN_PASSWORD Updated 2026-05-05
+
+✅ GitHub Secrets の設定が完了しました！
+```
+
+#### トラブルシューティング
+
+**GitHub CLIが見つからない**:
+```
+❌ GitHub CLI がインストールされていません
+```
+
+**解決策:**
+```powershell
+# Windows (winget)
+winget install --id GitHub.cli
+
+# または公式サイトからインストール
+# https://cli.github.com/
+```
+
+**認証エラー**:
+```powershell
+# 再認証
+gh auth logout
+gh auth login
+```
+
+---
+
 ## 📚 関連ドキュメント
 
 - [Day 2 ハンズオン資料](../../docs/handson/day2-azure-security.md)
+- [GitHub Secrets設定ガイド](../../.github/GITHUB_SECRETS_SETUP.md)
 - [GitHub Actions ワークフロー](../../.github/workflows/README.md)
 - [Azure Key Vault ベストプラクティス](https://learn.microsoft.com/azure/key-vault/general/best-practices)
