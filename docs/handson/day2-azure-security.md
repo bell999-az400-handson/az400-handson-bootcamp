@@ -1499,6 +1499,13 @@ env:
 jobs:
   docker-build:
     runs-on: ubuntu-latest
+    
+    # 重要: セキュリティスキャン結果アップロードに必要な権限
+    permissions:
+      contents: read              # リポジトリの読み取り
+      security-events: write      # Security tabへのアップロード
+      actions: read               # Actionsメタデータの読み取り
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -1528,7 +1535,32 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: az400acr.azurecr.io/az400webapp:${{ github.sha }}
+          format: 'sarif'           # SARIF形式で出力
+          output: 'trivy-results.sarif'
+        continue-on-error: true     # 脆弱性が見つかっても継続
+      
+      # ステップ 5: セキュリティスキャン結果をGitHub Securityタブにアップロード
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && github.event_name == 'push'
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
 ```
+
+**重要なポイント**:
+
+1. **`permissions`セクション** (Lines 18-21):
+   - `security-events: write`: GitHub Security tabへのスキャン結果アップロードに必須
+   - 権限がないと "Resource not accessible by integration" エラーが発生
+   
+2. **Trivyスキャン** (Lines 47-52):
+   - `format: 'sarif'`: 業界標準のセキュリティ結果フォーマット
+   - `continue-on-error: true`: 脆弱性検出時もワークフロー継続
+   
+3. **SARIF結果アップロード** (Lines 55-59):
+   - GitHub Security → Code scanning alertsで結果を確認可能
+   - `if: always()`: Trivyステップが失敗しても実行
 
 ---
 
@@ -1603,10 +1635,23 @@ az role assignment list --scope $ACR_ID --output table
       Pushing az400acr.azurecr.io/az400webapp:abc123... Done
       Pushing az400acr.azurecr.io/az400webapp:latest... Done
    ✅ Image scan (Trivy)
-      0 vulnerabilities found
+      Scanning image: az400acr.azurecr.io/az400webapp:abc123
+      Total: 5 (UNKNOWN: 0, LOW: 3, MEDIUM: 2, HIGH: 0, CRITICAL: 0)
+   ✅ Upload Trivy results to GitHub Security
+      Successfully uploaded results to Code Scanning
    ```
 
-4. **ACRでイメージ確認**:
+4. **セキュリティスキャン結果の確認**:
+   - GitHubリポジトリ → **Securityタブ**
+   - **Code scanning alerts** セクション
+   - Trivyが検出した脆弱性が一覧表示されます
+   
+   **確認項目**:
+   - 脆弱性の深刻度（CRITICAL/HIGH/MEDIUM/LOW）
+   - 影響を受けるパッケージ名とバージョン
+   - 修正方法（推奨バージョンへのアップグレードなど）
+
+5. **ACRでイメージ確認**:
    ```bash
    az acr repository list --name az400acr --output table
    az acr repository show-tags --name az400acr --repository az400webapp --output table
@@ -1623,17 +1668,34 @@ az role assignment list --scope $ACR_ID --output table
 | GitHub Secretsの最小化 | AZURE_CREDENTIALS 1つ | ❌ 複数のパスワードSecrets |
 | パスワード管理 | トークンベース自動管理 | ❌ 手動ローテーション |
 | 監査とトレーサビリティ | Service Principal ID追跡 | ❌ 共有Admin user |
+| セキュリティスキャン結果の保存 | GitHub Security tab (SARIF) | ❌ ビルドログのみ |
+| GitHub Actions権限設定 | security-events: write | ❌ 権限設定なし |
+| コンテナイメージスキャン | Trivy/Snyk/Aqua等のツール | ❌ スキャンなしでデプロイ |
 
 **よくある間違い**:
 - ❌ ACR Admin Userを有効化してパスワード使用
 - ❌ `ACR_USERNAME`/`ACR_PASSWORD` Secretsを設定
 - ❌ ContributorロールをACR全体に付与（過剰権限）
+- ❌ **GitHub Actions権限設定を忘れて"Resource not accessible by integration"エラー**
+- ❌ **セキュリティスキャンを実施せずにコンテナイメージをデプロイ**
 
 **ベストプラクティス**:
 - ✅ `az acr login`でパスワードレス認証
 - ✅ Service PrincipalにAcrPushロールのみ付与
 - ✅ 既存の`AZURE_CREDENTIALS` Secretを再利用
 - ✅ トークンベース認証で監査ログを個別追跡
+- ✅ **`permissions: security-events: write`でSARIF結果をアップロード**
+- ✅ **Trivyで脆弱性スキャンをCI/CDパイプラインに統合**
+- ✅ **GitHub Security tabで脆弱性を一元管理**
+
+**権限エラーのトラブルシューティング**:
+
+| エラーメッセージ | 原因 | 解決方法 |
+|----------------|------|---------|
+| "Resource not accessible by integration" | GitHub Actions権限不足 | `permissions: security-events: write`を追加 |
+| "Login failed: not valid JSON" | AZURE_CREDENTIALS形式が不正 | `az ad sp create-for-rbac --sdk-auth`で再作成 |
+| "permission denied while trying to connect to Docker daemon" | Docker未起動 | Docker Desktopを起動 |
+| "denied: requested access to the resource is denied" | ACR push権限なし | Service PrincipalにAcrPushロール付与 |
 
 ---
 
