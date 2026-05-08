@@ -61,7 +61,7 @@ az sql server show \
 
 | シークレット名 | 説明 | 用途 |
 |-------------|------|------|
-| `API_KEY` | 外部APIキー | サードパーティAPI認証 |
+| `API_KEY` | 外部APIキー（学習用） | デモ値: `demo-api-key-12345-for-learning` |
 | `EXTERNAL_API_TOKEN` | 外部APIトークン | Webhook認証など |
 
 ## 🔧 GitHub Secretsの設定手順
@@ -88,7 +88,7 @@ gh secret set SQL_SERVER_FQDN -b "az400sqlserver.database.windows.net"
 gh secret set SQL_DATABASE_NAME -b "az400db"
 gh secret set SQL_ADMIN_USER -b "sqladmin"
 gh secret set SQL_ADMIN_PASSWORD -b "P@ssw0rd123!"
-gh secret set API_KEY -b "your-api-key-here"
+gh secret set API_KEY -b "demo-api-key-12345-for-learning"
 ```
 
 ### 方法3: セキュアな一括設定スクリプト

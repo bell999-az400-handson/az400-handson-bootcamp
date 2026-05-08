@@ -69,3 +69,4 @@ coverage/
 *.pfx
 secrets.yaml
 secrets.json
+azure-credentials.json

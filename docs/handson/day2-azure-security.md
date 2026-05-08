@@ -676,10 +676,14 @@ az login
 # 2. リソースグループを環境変数に設定
 $env:RESOURCE_GROUP = "rg-az400-handson"
 
-# 3. スクリプトを実行
-.\scripts\setup\set-keyvault-secrets.sh
+# 3. スクリプトを実行（Git Bash経由）
+bash scripts/setup/set-keyvault-secrets.sh
 
-# または
+# ⚠️ エラーが出た場合: "$'\r': command not found"
+# → 改行コードをLFに変換
+bash -c "sed -i 's/\r$//' scripts/setup/set-keyvault-secrets.sh"
+bash -c "chmod +x scripts/setup/set-keyvault-secrets.sh"
+# → 再度実行
 bash scripts/setup/set-keyvault-secrets.sh
 ```
 
@@ -733,38 +737,125 @@ API Keyを入力 (スキップ可): ************
 
 詳細ガイド: [.github/GITHUB_SECRETS_SETUP.md](../../.github/GITHUB_SECRETS_SETUP.md)
 
-**必須シークレット**:
+---
+
+#### ステップ 1-1: Azure認証の準備（サービスプリンシパル作成）
+
+GitHub ActionsからAzureに接続するための認証情報を作成します。方法は2つあります：
+
+| 方法 | セキュリティ | 設定の複雑さ | 本ハンズオンでの使用 |
+|------|------------|------------|-------------------|
+| **方法A: 従来の方法（--sdk-auth）** | パスワードベース | 簡単 | ✅ 本ハンズオンで使用 |
+| **方法B: Federated Credential（推奨）** | パスワードレス | やや複雑 | 参考情報として記載 |
+
+**このハンズオンでは方法Aを使用します。**
+
+---
+
+##### 方法A: 従来の方法（--sdk-auth）⭐ 本ハンズオンで使用
+
+**Azure認証情報の作成手順**:
+
+**🔒 セキュリティ重要**: JSONファイルをリポジトリに作成せず、安全な方法で設定します。
 
 ```powershell
-# 1. Azure認証情報を作成
+# 1. サブスクリプションIDを取得
+$SUBSCRIPTION_ID = az account show --query id -o tsv
+
+# 2. サービスプリンシパルを作成してクリップボードにコピー（推奨）
 az ad sp create-for-rbac `
   --name "github-actions-az400" `
   --role contributor `
-  --scopes /subscriptions/<YOUR_SUBSCRIPTION_ID>/resourceGroups/rg-az400-handson `
-  --sdk-auth
+  --scopes "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/rg-az400-handson" `
+  --sdk-auth | Set-Clipboard
 
-# 出力されたJSONをGitHub SecretsのAZURE_CREDENTIALSに設定
+Write-Host "✅ Azure認証情報をクリップボードにコピーしました" -ForegroundColor Green
+Write-Host "⚠️ この情報は機密です。GitHub Secretsに設定したら、クリップボードをクリアしてください" -ForegroundColor Yellow
+
+# 3. クリップボードから直接GitHub Secretsに設定（次のステップで使用）
 ```
 
-**GitHub Secrets一覧**:
+**🔒 セキュリティベストプラクティス**:
+
+✅ **推奨**: クリップボード経由で直接設定（ファイル不要）  
+⚠️ **非推奨**: リポジトリ内にJSONファイルを作成  
+🚫 **絶対NG**: JSONファイルをGitにコミット
+
+<details>
+<summary>📖 万が一ファイルを作成した場合の対処法（クリックして展開）</summary>
+
+```powershell
+# .gitignoreに追加されているか確認
+Get-Content .gitignore | Select-String "azure-credentials.json"
+
+# 追加されていない場合は手動で追加
+Add-Content .gitignore "`nazure-credentials.json"
+
+# 既にコミットしてしまった場合はGit履歴から削除
+git rm --cached azure-credentials.json
+git commit -m "Remove sensitive credentials file"
+
+# ファイルを完全に削除
+Remove-Item azure-credentials.json -Force
+
+# サービスプリンシパルを再作成（漏洩した場合）
+az ad sp delete --id <clientId>
+# その後、新しいサービスプリンシパルを作成
+```
+
+</details>
+
+**出力例**:
+```json
+{
+  "clientId": "xxxx",
+  "clientSecret": "xxxx",
+  "subscriptionId": "xxxx",
+  "tenantId": "xxxx",
+  ...
+}
+```
+
+---
+
+#### ステップ 1-2: GitHub Secretsの設定
+
+**クリップボードにコピーした認証情報**とその他の設定値を、以下の**いずれかの方法**でGitHub Secretsに設定します。
+
+**必要なGitHub Secrets一覧**:
 
 | シークレット名 | 説明 | 取得方法 |
 |-------------|------|---------|
-| `AZURE_CREDENTIALS` | Azure認証情報（JSON） | `az ad sp create-for-rbac --sdk-auth` |
+| `AZURE_CREDENTIALS` | Azure認証情報（JSON） | 上記で作成した `azure-credentials.json` の内容 |
 | `SQL_SERVER_FQDN` | SQL Server FQDN | `az sql server show --query fullyQualifiedDomainName` |
 | `SQL_DATABASE_NAME` | データベース名 | 例: `az400db` |
 | `SQL_ADMIN_USER` | SQL管理者名 | 例: `sqladmin` |
 | `SQL_ADMIN_PASSWORD` | SQL管理者パスワード | デプロイ時に設定した値 |
-| `API_KEY` | 外部APIキー（オプション） | サードパーティから取得 |
+| `API_KEY` | 外部APIキー（学習用） | デモ値: `demo-api-key-12345-for-learning` |
 
-**GitHub Secretsの設定方法**:
+---
 
-1. **Web UIで設定**:
-   - リポジトリ → Settings → Secrets and variables → Actions
-   - "New repository secret" をクリック
-   - Name と Secret を入力して保存
+##### 設定方法①: Web UIで手動設定
 
-2. **GitHub CLIで設定**:
+1. GitHubリポジトリ → **Settings** → **Secrets and variables** → **Actions**
+2. **"New repository secret"** をクリック
+3. Name と Secret を入力して保存
+
+**手順**:
+- `AZURE_CREDENTIALS`: **クリップボードにコピーした認証情報**をペースト（Ctrl+V）
+- `SQL_SERVER_FQDN`: 値を入力
+- `SQL_DATABASE_NAME`: 値を入力
+- `SQL_ADMIN_USER`: 値を入力
+- `SQL_ADMIN_PASSWORD`: 値を入力
+- `API_KEY`: 学習用デモ値を入力 → `demo-api-key-12345-for-learning`
+
+**完了後**: セキュリティのためクリップボードをクリアしてください。
+
+---
+
+##### 設定方法②: GitHub CLIでコマンド設定
+
+**🔒 セキュリティ重要**: クリップボードから直接設定します。
 
 ```powershell
 # GitHub CLIインストール確認
@@ -773,19 +864,385 @@ gh --version
 # ログイン
 gh auth login
 
-# シークレットを設定
-gh secret set AZURE_CREDENTIALS < azure-credentials.json
+# ステップ1でクリップボードにコピーした認証情報を設定
+# クリップボードから直接設定（ファイル作成不要）
+Get-Clipboard | gh secret set AZURE_CREDENTIALS
+
+# その他のシークレットを設定
 gh secret set SQL_SERVER_FQDN -b "az400-dev-sqlserver.database.windows.net"
 gh secret set SQL_DATABASE_NAME -b "az400db"
 gh secret set SQL_ADMIN_USER -b "sqladmin"
 gh secret set SQL_ADMIN_PASSWORD -b "YourSecurePassword123!"
-gh secret set API_KEY -b "your-api-key-here"
+gh secret set API_KEY -b "demo-api-key-12345-for-learning"
+
+# クリップボードをクリア（セキュリティ対策）
+Set-Clipboard -Value ""
 
 # 確認
 gh secret list
 ```
 
-**ワークフロー実行手順**:
+---
+
+##### 設定方法③: 対話的スクリプトで一括設定（推奨）🌟
+
+```powershell
+# setup-github-secrets.ps1
+# GitHub Secretsを対話的に設定するスクリプト
+# 
+# 用途: AZ-400ハンズオン用のGitHub Secretsを安全に設定
+# セキュリティ: クリップボード経由でファイルを作成せず、機密情報を扱う
+
+# ========================================
+# 1. 前提条件チェック
+# ========================================
+
+# GitHub CLIがインストールされているか確認
+# GitHub CLIは'gh'コマンドでGitHub操作を行うツール
+if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+    Write-Host "❌ GitHub CLI がインストールされていません" -ForegroundColor Red
+    Write-Host "https://cli.github.com/ からインストールしてください"
+    exit 1
+}
+
+# ========================================
+# 2. GitHub認証確認
+# ========================================
+
+# ログイン確認
+# GitHub CLIが認証されているかチェック
+gh auth status
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "GitHub CLIでログインしてください"
+    gh auth login
+}
+
+Write-Host "🔐 GitHub Secrets を設定します" -ForegroundColor Green
+Write-Host ""
+
+# ========================================
+# 3. Azure認証情報の設定
+# ========================================
+
+# AZURE_CREDENTIALS: Azureサービスプリンシパル認証情報（JSON形式）
+# - GitHub ActionsからAzureにログインするために必要
+# - セキュリティ: ファイルではなくクリップボードから直接設定
+# - 前提: 事前に`az ad sp create-for-rbac --sdk-auth | Set-Clipboard`を実行済み
+Write-Host "📋 ステップ1でクリップボードにコピーした Azure認証情報を使用します" -ForegroundColor Cyan
+$useClipboard = Read-Host "クリップボードから設定しますか？ (y/n, Enter でスキップ)"
+if ($useClipboard -eq 'y') {
+    # クリップボードの内容をそのままGitHub Secretに設定
+    Get-Clipboard | gh secret set AZURE_CREDENTIALS
+    Write-Host "✅ AZURE_CREDENTIALS を設定しました" -ForegroundColor Green
+    
+    # セキュリティのためクリップボードをクリア
+    # 機密情報がクリップボードに残らないようにする
+    Set-Clipboard -Value ""
+    Write-Host "🔒 クリップボードをクリアしました" -ForegroundColor Green
+}
+
+# ========================================
+# 4. SQL Server接続情報の設定
+# ========================================
+
+# SQL_SERVER_FQDN: SQL Serverの完全修飾ドメイン名
+# - 形式: <server-name>.database.windows.net
+# - 取得方法: az sql server show --query fullyQualifiedDomainName
+Write-Host ""
+Write-Host "💾 SQL Server接続情報を設定します" -ForegroundColor Cyan
+$sqlServerFqdn = Read-Host "SQL Server FQDN (Enter でスキップ)"
+if ($sqlServerFqdn) {
+    gh secret set SQL_SERVER_FQDN -b $sqlServerFqdn
+    Write-Host "✅ SQL_SERVER_FQDN を設定しました" -ForegroundColor Green
+}
+
+# SQL_DATABASE_NAME: データベース名
+# - 例: az400db, handson-database など
+$sqlDbName = Read-Host "SQL Database名 (Enter でスキップ)"
+if ($sqlDbName) {
+    gh secret set SQL_DATABASE_NAME -b $sqlDbName
+    Write-Host "✅ SQL_DATABASE_NAME を設定しました" -ForegroundColor Green
+}
+
+# SQL_ADMIN_USER: SQL Server管理者のユーザー名
+# - Bicepデプロイ時に設定した管理者名
+# - 例: sqladmin, azureuser など
+$sqlAdminUser = Read-Host "SQL管理者ユーザー名 (Enter でスキップ)"
+if ($sqlAdminUser) {
+    gh secret set SQL_ADMIN_USER -b $sqlAdminUser
+    Write-Host "✅ SQL_ADMIN_USER を設定しました" -ForegroundColor Green
+}
+
+# ========================================
+# 5. 機密情報の設定（SecureString使用）
+# ========================================
+
+# SQL_ADMIN_PASSWORD: SQL Server管理者のパスワード
+# - セキュリティ: SecureStringで入力（画面にマスク表示）
+# - コマンド履歴にも残らない
+Write-Host ""
+Write-Host "🔑 機密情報を設定します（入力は画面に表示されません）" -ForegroundColor Cyan
+$sqlAdminPassword = Read-Host "SQL管理者パスワード (Enter でスキップ)" -AsSecureString
+if ($sqlAdminPassword.Length -gt 0) {
+    # SecureStringを平文に変換（メモリ上でのみ）
+    $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sqlAdminPassword)
+    )
+    # GitHub Secretに設定
+    gh secret set SQL_ADMIN_PASSWORD -b $plainPassword
+    Write-Host "✅ SQL_ADMIN_PASSWORD を設定しました" -ForegroundColor Green
+    
+    # 変数をクリア（メモリから削除）
+    $plainPassword = $null
+}
+
+# API_KEY: 外部APIキー（学習用）
+# - このハンズオンでは学習目的のデモ値を使用
+# - デモ値: demo-api-key-12345-for-learning
+# - セキュリティ: SecureStringで入力（実際のAPIキーと同じ扱い）
+Write-Host "学習用デモ値を設定する場合: demo-api-key-12345-for-learning" -ForegroundColor Yellow
+$apiKey = Read-Host "API Key (Enter でスキップ)" -AsSecureString
+if ($apiKey.Length -gt 0) {
+    # SecureStringを平文に変換（メモリ上でのみ）
+    $plainApiKey = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($apiKey)
+    )
+    # GitHub Secretに設定
+    gh secret set API_KEY -b $plainApiKey
+    Write-Host "✅ API_KEY を設定しました" -ForegroundColor Green
+    
+    # 変数をクリア（メモリから削除）
+    $plainApiKey = $null
+}
+
+# ========================================
+# 6. 設定確認
+# ========================================
+
+Write-Host ""
+Write-Host "🔍 設定されたシークレット一覧:" -ForegroundColor Cyan
+# GitHub Secretsのリストを表示（値は表示されず、名前と更新日時のみ）
+gh secret list
+
+# ========================================
+# 7. 完了メッセージ
+# ========================================
+
+Write-Host ""
+Write-Host "✅ GitHub Secrets の設定が完了しました！" -ForegroundColor Green
+Write-Host ""
+Write-Host "📌 次のステップ:" -ForegroundColor Yellow
+Write-Host "  1. GitHub ActionsでWorkflowを実行してください" -ForegroundColor White
+Write-Host "  2. リポジトリのActions タブから 'Deploy Secrets to Key Vault' を選択" -ForegroundColor White
+Write-Host "  3. 'Run workflow' をクリックして環境（dev/staging/prod）を選択" -ForegroundColor White
+```
+
+**スクリプト実行方法**:
+
+```powershell
+# 前提: ステップ1でAzure認証情報をクリップボードにコピー済み
+
+# スクリプトを実行
+cd scripts/setup
+.\setup-github-secrets.ps1
+
+# プロンプトで以下を入力：
+# ✅ Azure認証情報: y （クリップボードから設定）
+# ✅ SQL Server FQDN: az400-dev-sqlserver.database.windows.net
+# ✅ SQL Database名: az400db
+# ✅ SQL管理者ユーザー名: sqladmin
+# ✅ SQL管理者パスワード: （SecureStringで非表示入力）
+# ✅ API Key: demo-api-key-12345-for-learning （学習用デモ値）
+```
+
+**実行例**:
+```
+🔐 GitHub Secrets を設定します
+
+📋 ステップ1でクリップボードにコピーした Azure認証情報を使用します
+クリップボードから設定しますか？ (y/n, Enter でスキップ): y
+✅ AZURE_CREDENTIALS を設定しました
+🔒 クリップボードをクリアしました
+
+💾 SQL Server接続情報を設定します
+SQL Server FQDN (Enter でスキップ): az400-dev-sqlserver.database.windows.net
+✅ SQL_SERVER_FQDN を設定しました
+SQL Database名 (Enter でスキップ): az400db
+✅ SQL_DATABASE_NAME を設定しました
+SQL管理者ユーザー名 (Enter でスキップ): sqladmin
+✅ SQL_ADMIN_USER を設定しました
+
+🔑 機密情報を設定します（入力は画面に表示されません）
+SQL管理者パスワード (Enter でスキップ): **********
+✅ SQL_ADMIN_PASSWORD を設定しました
+学習用デモ値を設定する場合: demo-api-key-12345-for-learning
+API Key (Enter でスキップ): **********
+✅ API_KEY を設定しました
+
+🔍 設定されたシークレット一覧:
+AZURE_CREDENTIALS    Updated 2026-05-08
+SQL_SERVER_FQDN      Updated 2026-05-08
+SQL_DATABASE_NAME    Updated 2026-05-08
+SQL_ADMIN_USER       Updated 2026-05-08
+SQL_ADMIN_PASSWORD   Updated 2026-05-08
+API_KEY              Updated 2026-05-08
+
+✅ GitHub Secrets の設定が完了しました！
+
+📌 次のステップ: → 下記の **ステップ 1-3** に進んでGitHub ActionsでKey Vaultにデプロイしてください
+```
+
+**スクリプトの場所**: [scripts/setup/setup-github-secrets.ps1](../../scripts/setup/setup-github-secrets.ps1)
+
+詳細ガイド: [.github/GITHUB_SECRETS_SETUP.md](../../.github/GITHUB_SECRETS_SETUP.md)
+
+---
+
+##### 方法B: Federated Credential（参考情報）🔐
+
+**より安全なパスワードレス認証**。本番環境やセキュリティ重視のプロジェクトで推奨されますが、設定がやや複雑です。
+
+<details>
+<summary>📖 Federated Credentialの設定手順（クリックして展開）</summary>
+
+#### ステップ1: サービスプリンシパル作成
+
+```powershell
+# サブスクリプションIDを取得
+$SUBSCRIPTION_ID = az account show --query id -o tsv
+
+# サービスプリンシパル作成（シークレットなし）
+$SP_OUTPUT = az ad sp create-for-rbac `
+  --name "github-actions-az400-federated" `
+  --role contributor `
+  --scopes "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/rg-az400-handson" `
+  --json-auth | ConvertFrom-Json
+
+# 重要な値を保存
+$CLIENT_ID = $SP_OUTPUT.clientId
+$TENANT_ID = $SP_OUTPUT.tenantId
+
+Write-Host "Client ID: $CLIENT_ID"
+Write-Host "Tenant ID: $TENANT_ID"
+Write-Host "Subscription ID: $SUBSCRIPTION_ID"
+```
+
+#### ステップ2: Federated Credentialの設定
+
+```powershell
+# GitHubリポジトリ情報を設定
+$GITHUB_ORG = "your-github-org"  # GitHubのOrg名またはユーザー名
+$GITHUB_REPO = "az400-handson-bootcamp"  # リポジトリ名
+
+# Federated Credentialを作成（mainブランチ用）
+az ad app federated-credential create `
+  --id $CLIENT_ID `
+  --parameters @"
+{
+  \"name\": \"github-federated-main\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"repo:$GITHUB_ORG/${GITHUB_REPO}:ref:refs/heads/main\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}
+"@
+```
+
+#### ステップ3: GitHub Secretsの設定
+
+**必要なSecrets（AZURE_CREDENTIALSは不要）**:
+
+```powershell
+gh secret set AZURE_CLIENT_ID -b $CLIENT_ID
+gh secret set AZURE_TENANT_ID -b $TENANT_ID
+gh secret set AZURE_SUBSCRIPTION_ID -b $SUBSCRIPTION_ID
+
+# その他のSecrets（SQL, API Keyなど）は方法Aと同じ
+gh secret set SQL_SERVER_FQDN -b "az400-dev-sqlserver.database.windows.net"
+gh secret set SQL_DATABASE_NAME -b "az400db"
+gh secret set SQL_ADMIN_USER -b "sqladmin"
+gh secret set SQL_ADMIN_PASSWORD -b "YourSecurePassword123!"
+```
+
+#### ステップ4: GitHub Actionsワークフローの修正（OIDC認証用）
+
+> **注**: 方法A（AZURE_CREDENTIALS使用）のワークフロー詳細は、**ステップ3**をご覧ください。  
+> ここでは、方法B（Federated Credential）特有のOIDC認証設定を説明します。
+
+```yaml
+# .github/workflows/deploy.yml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # OIDC認証に必要（方法B特有）
+      contents: read
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v1
+        with:
+          # 方法Bではcreds不要、代わりにOIDCトークンを使用
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+```
+
+**方法Aとの違い**:
+- ❌ `creds: ${{ secrets.AZURE_CREDENTIALS }}` は不要（パスワードレス）
+- ✅ `permissions: id-token: write` が必要（OIDCトークン発行）
+- ✅ client-id, tenant-id, subscription-id を個別に指定
+
+**メリット**:
+- ✅ シークレット（パスワード）が不要
+- ✅ 定期的なローテーション不要
+- ✅ 高いセキュリティ
+
+**デメリット**:
+- ⚠️ 設定手順がやや複雑
+- ⚠️ 既存ワークフローの修正が必要
+
+詳細: [GitHub公式ドキュメント](https://docs.github.com/actions/deployment/security-hardening-your-deployments/configuring-openid-connect-in-azure)
+
+</details>
+
+**このハンズオンでは方法Aを使用しますが、実務では方法Bの採用を検討してください。**
+
+---
+
+##### ✅ GitHub Secrets設定完了の確認
+
+設定が完了したら、以下の方法で確認します：
+
+**GitHub Web UIで確認**:
+1. リポジトリ → Settings → Secrets and variables → Actions
+2. 以下のSecretsが表示されていることを確認：
+   - AZURE_CREDENTIALS
+   - SQL_SERVER_FQDN
+   - SQL_DATABASE_NAME
+   - SQL_ADMIN_USER
+   - SQL_ADMIN_PASSWORD
+   - API_KEY（オプション）
+
+**GitHub CLIで確認**:
+```powershell
+gh secret list
+```
+
+**出力例**:
+```
+AZURE_CREDENTIALS    Updated 2026-05-05
+SQL_SERVER_FQDN      Updated 2026-05-05
+SQL_DATABASE_NAME    Updated 2026-05-05
+SQL_ADMIN_USER       Updated 2026-05-05
+SQL_ADMIN_PASSWORD   Updated 2026-05-05
+```
+
+---
+
+#### ステップ 1-3: GitHub ActionsでKey Vaultにシークレットをデプロイ
+
+GitHub Secretsの設定が完了したら、GitHub Actionsワークフローを使用してKey Vaultにシークレットをデプロイします。
+
+##### 🔧 ワークフロー実行手順
 
 1. **GitHubリポジトリページに移動**
 2. **Actionsタブをクリック**
@@ -794,7 +1251,92 @@ gh secret list
 5. **環境を選択** (dev/staging/prod)
 6. **"Run workflow"** を実行
 
-**ワークフロー実行結果**:
+---
+
+##### 📄 ワークフロー定義の詳細
+
+ワークフローファイル: [.github/workflows/deploy-secrets.yml](../../.github/workflows/deploy-secrets.yml)
+
+**主要な処理内容**:
+
+```yaml
+name: Deploy Secrets to Key Vault
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment (dev/staging/prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+jobs:
+  deploy-secrets:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    # Azure認証（方法A: AZURE_CREDENTIALS使用）
+    - name: Azure Login
+      uses: azure/login@v3
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+    
+    # Key Vault名を動的取得
+    - name: Get Key Vault Name
+      id: get-kv
+      run: |
+        KEY_VAULT_NAME=$(az deployment group show \
+          --resource-group rg-az400-handson \
+          --name main \
+          --query properties.outputs.keyVaultName.value -o tsv)
+        echo "keyvault_name=$KEY_VAULT_NAME" >> $GITHUB_OUTPUT
+    
+    # データベース接続文字列を設定
+    - name: Set Database Connection String
+      env:
+        DB_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
+        SQL_SERVER_FQDN: ${{ secrets.SQL_SERVER_FQDN }}
+        SQL_DATABASE_NAME: ${{ secrets.SQL_DATABASE_NAME }}
+        SQL_ADMIN_USER: ${{ secrets.SQL_ADMIN_USER }}
+      run: |
+        CONNECTION_STRING="Server=tcp:${SQL_SERVER_FQDN},1433;Database=${SQL_DATABASE_NAME};User ID=${SQL_ADMIN_USER};Password=${DB_PASSWORD};Encrypt=true;"
+        
+        az keyvault secret set \
+          --vault-name "${{ steps.get-kv.outputs.keyvault_name }}" \
+          --name DatabaseConnectionString \
+          --value "$CONNECTION_STRING" \
+          --output none
+    
+    # API Keyを設定
+    - name: Set API Key
+      if: ${{ secrets.API_KEY != '' }}
+      env:
+        API_KEY: ${{ secrets.API_KEY }}
+      run: |
+        az keyvault secret set \
+          --vault-name "${{ steps.get-kv.outputs.keyvault_name }}" \
+          --name ApiKey \
+          --value "$API_KEY" \
+          --output none
+```
+
+**ポイント**:
+- ✅ `workflow_dispatch`: 手動実行トリガー
+- ✅ `secrets.AZURE_CREDENTIALS`: ステップ2で設定したAzure認証情報を使用
+- ✅ 環境変数 `env:` でシークレットを安全に受け渡し
+- ✅ `--output none`: 機密情報をログに出力しない
+
+---
+
+##### ✅ ワークフロー実行結果の確認
 
 ```
 Run workflow
@@ -810,11 +1352,14 @@ Run workflow
 ✅ Workflow completed successfully
 ```
 
-**ワークフロー定義**: [.github/workflows/deploy-secrets.yml](../../.github/workflows/deploy-secrets.yml)
-
 ---
 
-##### 方法3: Azure CLIでの個別設定
+##### 代替方法: Azure CLIで直接Key Vaultに設定
+
+GitHub Actionsを使わず、Azure CLIで直接Key Vaultにシークレットを設定する方法です。
+
+<details>
+<summary>📖 Azure CLI設定手順（クリックして展開）</summary>
 
 ```powershell
 # Key Vault名を取得
@@ -838,7 +1383,8 @@ az keyvault secret set \
   --value "$DB_CONNECTION_STRING" \
   --output none
 
-# API Key設定（対話的）
+# API Key設定（対話的・学習用デモ値）
+# 学習用デモ値: demo-api-key-12345-for-learning
 read -sp 'API Keyを入力: ' API_KEY
 echo ""
 az keyvault secret set \
@@ -851,6 +1397,8 @@ unset API_KEY
 # 確認（値は表示しない）
 az keyvault secret list --vault-name $KEY_VAULT_NAME --output table
 ```
+
+</details>
 
 ---
 
@@ -908,7 +1456,13 @@ az keyvault secret list --vault-name $KEY_VAULT_NAME --output table
 - Q: "複数のVMで同じKey Vaultにアクセス"
 - A: **user-assigned Managed Identity** を使用
 
-#### 2.2 Web App with system-assigned Managed Identity
+---
+
+#### 2.2 Bicepモジュール定義: Web App (system-assigned)
+
+**目的**: Web Appにsystem-assigned Managed Identityを有効化するBicepモジュールを定義します。
+
+> ⚠️ **注意**: このセクションではファイルを**作成/更新**します。デプロイは **2.4** で実行します。
 
 **infra/bicep/modules/webapp.bicep**:
 
@@ -956,7 +1510,18 @@ output webAppName string = webApp.name
 output managedIdentityPrincipalId string = webApp.identity.principalId
 ```
 
-#### 2.3 main.bicep更新
+**ポイント**:
+- `identity: { type: 'SystemAssigned' }`: Web Appにsystem-assigned Managed Identityを自動付与
+- `managedIdentityPrincipalId`: Key Vaultのアクセスポリシー設定で使用（2.3で参照）
+- このファイルは **2.4でデプロイ** します
+
+---
+
+#### 2.3 Bicepメインファイル更新
+
+**目的**: 2.2で作成したWeb Appモジュールを呼び出すため、main.bicepを更新します。
+
+> ⚠️ **注意**: このセクションではファイルを**更新**します。デプロイは **2.4** で実行します。
 
 **infra/bicep/main.bicep**（更新）:
 
@@ -995,17 +1560,56 @@ output keyVaultName string = keyVault.outputs.keyVaultName
 output webAppUrl string = 'https://${webApp.outputs.webAppName}.azurewebsites.net'
 ```
 
-#### 2.4 デプロイ実行
+**ポイント**:
+- `module webApp 'modules/webapp.bicep'`: 2.2で定義したモジュールを呼び出し
+- `managedIdentityObjectId: webApp.outputs.managedIdentityPrincipalId`: Web AppのManaged IdentityをKey Vaultに自動登録
+- モジュール間の依存関係を自動解決（Web App作成 → Managed Identity取得 → Key Vaultアクセス許可）
+- **次の2.4でデプロイ** します
+
+---
+
+#### 2.4 Bicepデプロイ実行（2.2・2.3をAzureに適用）
+
+**目的**: 2.2と2.3で定義したBicepファイルをAzureにデプロイし、実際のリソースを作成します。
+
+**デプロイ内容**:
+- ✅ Web App (system-assigned Managed Identity有効化)
+- ✅ Key Vaultへのアクセス許可設定
+- ✅ モジュール間の依存関係を自動解決
+
+**実行コマンド**:
 
 ```powershell
-# Bicepデプロイ
+# Bicepデプロイ（2.2と2.3で定義した構成をAzureに適用）
 az deployment group create `
   --resource-group rg-az400-handson `
   --template-file infra/bicep/main.bicep `
   --parameters infra/bicep/parameters/dev.parameters.json
 
-# 確認
+# デプロイ結果の確認
 az resource list --resource-group rg-az400-handson --output table
+```
+
+**期待される出力**:
+```
+Name                          ResourceGroup      Location    Type
+----------------------------  -----------------  ----------  ----------------------------------
+az400-dev-webapp              rg-az400-handson   japaneast   Microsoft.Web/sites
+az400-dev-kv                  rg-az400-handson   japaneast   Microsoft.KeyVault/vaults
+az400-dev-plan                rg-az400-handson   japaneast   Microsoft.Web/serverfarms
+...
+```
+
+**確認ポイント**:
+- ✅ Web Appが作成されている
+- ✅ Managed Identityが有効化されている（次のコマンドで確認）
+
+```powershell
+# Managed Identity確認
+az webapp identity show `
+  --name az400-dev-webapp `
+  --resource-group rg-az400-handson `
+  --query principalId -o tsv
 ```
 
 ---
