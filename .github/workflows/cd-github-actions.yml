@@ -98,14 +98,20 @@ jobs:
       
       - name: Smoke test
         run: |
-          echo "Waiting for container to start..."
-          # 最大2分間、10秒ごとにリトライ
-          for i in {1..12}; do
-            echo "Health check attempt $i/12..."
+          echo "🔍 Waiting for container to start..."
+          echo "Note: Initial container startup may take 3-5 minutes"
+          
+          # 最大5分間、15秒ごとにリトライ（20回）
+          MAX_ATTEMPTS=20
+          RETRY_DELAY=15
+          
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            echo ""
+            echo "Health check attempt $i/$MAX_ATTEMPTS..."
             
             # HTTPステータスコードを確認（エラーハンドリング改善）
             set +e  # 一時的にエラーで停止しない
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health 2>/dev/null)
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 --connect-timeout 10 https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health 2>/dev/null)
             CURL_EXIT=$?
             set -e  # 再度エラーで停止するように
             
@@ -120,28 +126,50 @@ jobs:
             echo "HTTP Status: $HTTP_CODE (curl exit: $CURL_EXIT)"
             
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "✓ Health check passed"
+              echo "✅ Health check passed!"
+              echo "Container is healthy and responding"
               curl -s https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health | jq . || true
               exit 0
             elif [ "$HTTP_CODE" = "503" ]; then
               echo "⚠️  Service Unavailable (503) - Container may still be starting..."
+              if [ $i -ge 10 ]; then
+                echo "  Hint: Container startup is taking longer than expected"
+              fi
             elif [ "$HTTP_CODE" = "000" ]; then
               echo "❌ Connection failed - Timeout or network error"
+              if [ $CURL_EXIT -eq 28 ]; then
+                echo "  Reason: Request timeout (exceeded 30 seconds)"
+              elif [ $CURL_EXIT -eq 7 ]; then
+                echo "  Reason: Failed to connect to host"
+              fi
             else
               echo "⚠️  Unexpected status code: $HTTP_CODE"
             fi
             
-            if [ $i -lt 12 ]; then
-              echo "Waiting 10 seconds before retry..."
-              sleep 10
+            if [ $i -lt $MAX_ATTEMPTS ]; then
+              echo "Waiting $RETRY_DELAY seconds before retry..."
+              sleep $RETRY_DELAY
             fi
           done
           
           echo ""
-          echo "✗ Health check failed after 12 attempts (2 minutes)"
+          echo "✗ Health check failed after $MAX_ATTEMPTS attempts (5 minutes)"
           echo "=== Final diagnostics ==="
-          echo "Attempting to access root URL..."
-          curl -v https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/ 2>&1 | head -n 50
+          echo ""
+          echo "📊 Checking Web App status..."
+          az webapp show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query "{state:state, availabilityState:availabilityState}" -o json || true
+          
+          echo ""
+          echo "🐳 Checking container configuration..."
+          az webapp config show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query "{linuxFxVersion:linuxFxVersion, alwaysOn:alwaysOn}" -o json || true
+          
+          echo ""
+          echo "📝 Recent container logs (last 50 lines)..."
+          az webapp log tail --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --limit 50 2>&1 | head -n 50 || echo "Logs not available"
+          
+          echo ""
+          echo "🔍 Attempting to access root URL..."
+          curl -v --max-time 30 https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/ 2>&1 | head -n 80 || true
           exit 1
       
       - name: Show logs on failure
@@ -206,13 +234,19 @@ jobs:
       
       - name: Run integration tests
         run: |
-          echo "Running integration tests..."
-          # 最大2分間、10秒ごとにリトライ
-          for i in {1..12}; do
-            echo "Health check attempt $i/12..."
+          echo "🔍 Running integration tests..."
+          echo "Note: Initial container startup may take 3-5 minutes"
+          
+          # 最大5分間、15秒ごとにリトライ（20回）
+          MAX_ATTEMPTS=20
+          RETRY_DELAY=15
+          
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            echo ""
+            echo "Health check attempt $i/$MAX_ATTEMPTS..."
             
             set +e
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://az400-staging-webapp.azurewebsites.net/health 2>/dev/null)
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 --connect-timeout 10 https://az400-staging-webapp.azurewebsites.net/health 2>/dev/null)
             CURL_EXIT=$?
             set -e
             
@@ -224,17 +258,21 @@ jobs:
             echo "HTTP Status: $HTTP_CODE (curl exit: $CURL_EXIT)"
             
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "✓ Health check passed"
+              echo "✅ Health check passed!"
+              echo "Staging environment is healthy"
               curl -s https://az400-staging-webapp.azurewebsites.net/health | jq . || true
               exit 0
+            elif [ "$HTTP_CODE" = "503" ] && [ $i -ge 10 ]; then
+              echo "⚠️  Service Unavailable - Container startup taking longer than expected"
             fi
             
-            if [ $i -lt 12 ]; then
-              echo "Waiting 10 seconds before retry..."
-              sleep 10
+            if [ $i -lt $MAX_ATTEMPTS ]; then
+              echo "Waiting $RETRY_DELAY seconds before retry..."
+              sleep $RETRY_DELAY
             fi
           done
-          echo "✗ Health check failed after 12 attempts (2 minutes)"
+          echo ""
+          echo "✗ Health check failed after $MAX_ATTEMPTS attempts (5 minutes)"
           exit 1
       
       - name: Notification
@@ -285,13 +323,19 @@ jobs:
       
       - name: Production smoke test
         run: |
-          echo "Waiting for production container to start..."
-          # 最大2分間、10秒ごとにリトライ
-          for i in {1..12}; do
-            echo "Health check attempt $i/12..."
+          echo "🔍 Waiting for production container to start..."
+          echo "Note: Initial container startup may take 3-5 minutes"
+          
+          # 最大5分間、15秒ごとにリトライ（20回）
+          MAX_ATTEMPTS=20
+          RETRY_DELAY=15
+          
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            echo ""
+            echo "Health check attempt $i/$MAX_ATTEMPTS..."
             
             set +e
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://az400-prod-webapp.azurewebsites.net/health 2>/dev/null)
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 --connect-timeout 10 https://az400-prod-webapp.azurewebsites.net/health 2>/dev/null)
             CURL_EXIT=$?
             set -e
             
@@ -303,17 +347,21 @@ jobs:
             echo "HTTP Status: $HTTP_CODE (curl exit: $CURL_EXIT)"
             
             if [ "$HTTP_CODE" = "200" ]; then
-              echo "✓ Production health check passed"
+              echo "✅ Production health check passed!"
+              echo "Production environment is live and healthy"
               curl -s https://az400-prod-webapp.azurewebsites.net/health | jq . || true
               exit 0
+            elif [ "$HTTP_CODE" = "503" ] && [ $i -ge 10 ]; then
+              echo "⚠️  Service Unavailable - Container startup taking longer than expected"
             fi
             
-            if [ $i -lt 12 ]; then
-              echo "Waiting 10 seconds before retry..."
-              sleep 10
+            if [ $i -lt $MAX_ATTEMPTS ]; then
+              echo "Waiting $RETRY_DELAY seconds before retry..."
+              sleep $RETRY_DELAY
             fi
           done
-          echo "✗ Production health check failed after 12 attempts (2 minutes)"
+          echo ""
+          echo "✗ Production health check failed after $MAX_ATTEMPTS attempts (5 minutes)"
           exit 1
       
       - name: Notify deployment
