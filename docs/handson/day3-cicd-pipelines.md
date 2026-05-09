@@ -28,15 +28,35 @@
 
 #### 1.1 Service Principal作成
 
-```bash
-# Service Principal作成（GitHub ActionsがAzureにアクセスするため）
-az ad sp create-for-rbac \
-  --name "sp-az400-github-actions" \
-  --role contributor \
-  --scopes /subscriptions/<SUBSCRIPTION_ID>/resourceGroups/rg-az400-handson \
-  --sdk-auth
+> **📝 注意**: この手順は **Day 2で既に実施済み** の場合は省略できます。  
+> Day 2で作成したService Principal (`github-actions-az400`) とGitHub Secret (`AZURE_CREDENTIALS`) をそのまま使用してください。
 
-# 出力をコピー（GitHub Secretsに保存）
+```powershell
+# 1. サブスクリプションIDを取得
+$SUBSCRIPTION_ID = az account show --query id -o tsv
+
+# 2. サービスプリンシパルを作成してクリップボードにコピー（推奨）
+az ad sp create-for-rbac `
+  --name "github-actions-az400" `
+  --role contributor `
+  --scopes "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/rg-az400-handson" `
+  --sdk-auth | Set-Clipboard
+
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "✅ Azure認証情報をクリップボードにコピーしました" -ForegroundColor Green
+    Write-Host "⚠️ この情報は機密です。GitHub Secretsに設定したら、クリップボードをクリアしてください" -ForegroundColor Yellow
+} else {
+    Write-Host "❌ Service Principal作成に失敗しました（終了コード: $LASTEXITCODE）" -ForegroundColor Red
+}
+
+# 3. 作成されたService Principalを確認
+Write-Host "`n📋 Service Principal一覧:" -ForegroundColor Cyan
+az ad sp list --filter "displayName eq 'github-actions-az400'" --query "[].{Name:displayName, AppId:appId, CreatedDate:createdDateTime}" -o table
+
+# 4. クリップボードの内容を確認（任意）
+# Get-Clipboard | ConvertFrom-Json | ConvertTo-Json -Depth 5
+
+# 5. クリップボードから直接GitHub Secretsに設定（次のステップで使用）
 ```
 
 出力例:
@@ -52,15 +72,19 @@ az ad sp create-for-rbac \
 
 #### 1.2 GitHub Secrets設定
 
-GitHub > Settings > Secrets and variables > Actions:
+> **📝 注意**: Day 2で既に `AZURE_CREDENTIALS` を設定済みの場合、この手順は不要です。
 
-- `AZURE_CREDENTIALS`: 上記JSON全体
-- `AZURE_SUBSCRIPTION_ID`: サブスクリプションID
-- `ACR_LOGIN_SERVER`: az400acr.azurecr.io
-- `ACR_USERNAME`: ACRのユーザー名
-- `ACR_PASSWORD`: ACRのパスワード
+GitHub > Settings > Secrets and variables > Actions に以下を設定:
+
+- `AZURE_CREDENTIALS`: 上記JSON全体（Service Principalの認証情報）
+
+**備考**: 
+- ACRへのログインは `az acr login` を使用するため、ACR個別の認証情報（ACR_USERNAME/PASSWORD）は不要です
+- `AZURE_CREDENTIALS` のみでACR + Web Appの両方にアクセス可能です
 
 #### 1.3 CI Pipeline作成
+
+**CI Pipelineの目的**: mainまたはdevelopブランチへのpush、およびmainへのPR時に自動実行され、コード品質の確保とDockerイメージの作成を行います。
 
 **.github/workflows/ci-github-actions.yml**:
 
@@ -78,16 +102,18 @@ env:
   WORKING_DIRECTORY: './src/webapp'
 
 jobs:
+  # ジョブ1: ビルドとテスト
+  # 目的: Node.jsアプリケーションの依存関係インストール、Lint、テスト実行、カバレッジ収集
   build-and-test:
     name: Build and Test
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
@@ -98,57 +124,120 @@ jobs:
         working-directory: ${{ env.WORKING_DIRECTORY }}
       
       - name: Run linter
-        run: npm run lint || echo "No lint script"
+        run: npm run lint || echo "No lint script defined"
         working-directory: ${{ env.WORKING_DIRECTORY }}
+        continue-on-error: true
       
       - name: Run tests
         run: npm test
         working-directory: ${{ env.WORKING_DIRECTORY }}
       
-      - name: Build application
-        run: npm run build || echo "No build script"
-        working-directory: ${{ env.WORKING_DIRECTORY }}
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v6
+        with:
+          directory: ${{ env.WORKING_DIRECTORY }}/coverage
+          fail_ci_if_error: false
   
+  # ジョブ2: Dockerイメージビルドとセキュリティスキャン
+  # 目的: ACRへのDockerイメージpush、Trivyによる脆弱性スキャン、GitHub Securityへの結果アップロード
+  # 実行条件: build-and-testジョブが成功 かつ pushイベント（PR時は実行しない）
   docker-build:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
     needs: build-and-test
     if: github.event_name == 'push'
     
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
       
       - name: Login to Azure Container Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          az acr login --name az400acr
       
       - name: Build and push Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: ${{ env.WORKING_DIRECTORY }}
-          push: true
-          tags: |
-            ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
-            ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:latest
+        run: |
+          docker build -t az400acr.azurecr.io/az400webapp:${{ github.sha }} \
+                       -t az400acr.azurecr.io/az400webapp:latest \
+                       ${{ env.WORKING_DIRECTORY }}
+          docker push az400acr.azurecr.io/az400webapp:${{ github.sha }}
+          docker push az400acr.azurecr.io/az400webapp:latest
       
       - name: Image scan (Trivy)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
+          image-ref: az400acr.azurecr.io/az400webapp:${{ github.sha }}
           format: 'sarif'
           output: 'trivy-results.sarif'
+        continue-on-error: true
       
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v4
+        if: always() && github.event_name == 'push'
         with:
           sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
 ```
 
 #### 1.4 CD Pipeline作成
+
+**CD Pipelineの目的**: CI Pipelineが成功後、Dev → Staging → Productionの順に段階的デプロイを実行します。各環境でヘルスチェックと検証を行い、問題があれば次の環境へ進みません。
+
+**具体的な実装手順：**
+
+**手順1: ワークフローファイルの作成**
+
+```powershell
+# 1. ワークフローディレクトリが存在することを確認
+if (-not (Test-Path ".github/workflows")) {
+    New-Item -Path ".github/workflows" -ItemType Directory -Force
+    Write-Host "✅ .github/workflows ディレクトリを作成しました" -ForegroundColor Green
+}
+
+# 2. CD Pipelineファイルを作成
+New-Item -Path ".github/workflows/cd-github-actions.yml" -ItemType File -Force
+Write-Host "✅ cd-github-actions.yml を作成しました" -ForegroundColor Green
+```
+
+**手順2: GitHub Environmentsの設定**
+
+CD Pipelineは3つの環境（development/staging/production）を使用するため、GitHub上で事前設定が必要です。
+
+```powershell
+# ブラウザでGitHubリポジトリを開く
+start "https://github.com/YOUR_USERNAME/az400-handson-bootcamp/settings/environments"
+```
+
+**GitHub Web UIでの操作：**
+
+1. **Settings** → **Environments** → **New environment** をクリック
+
+2. **Development環境**:
+   - Name: `development`
+   - Required reviewers: 設定不要（自動デプロイ）
+
+3. **Staging環境**:
+   - Name: `staging`
+   - Required reviewers: 任意
+
+4. **Production環境**:
+   - Name: `production`
+   - ✅ **Required reviewers**: 1人以上選択（本番デプロイ前の承認）
+   - Wait timer: 0分（即座）または5分など
+
+**手順3: YAMLファイルに内容を記述**
+
+以下のYAMLコードを `.github/workflows/cd-github-actions.yml` に記述します。
 
 **.github/workflows/cd-github-actions.yml**:
 
@@ -167,6 +256,9 @@ env:
   RESOURCE_GROUP: 'rg-az400-handson'
 
 jobs:
+  # ジョブ1: 開発環境へのデプロイ
+  # 目的: 最新のDockerイメージをDev環境にデプロイし、詳細な診断とヘルスチェックを実行
+  # 特徴: Web App存在確認、デプロイ後の設定確認、リトライ機能付きSmoke test、失敗時の詳細ログ収集
   deploy-dev:
     name: Deploy to Development
     runs-on: ubuntu-latest
@@ -177,20 +269,112 @@ jobs:
     
     steps:
       - name: Login to Azure
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
+      - name: Check Web App existence
+        run: |
+          echo "🔍 Verifying Web App exists..."
+          if ! az webapp show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
+            echo "❌ ERROR: Web App '${{ env.AZURE_WEBAPP_NAME }}' not found in resource group '${{ env.RESOURCE_GROUP }}'"
+            echo "Available web apps in resource group:"
+            az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[].{Name:name, State:state}" -o table
+            exit 1
+          fi
+          echo "✅ Web App exists"
+      
       - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
+        uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          images: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
+          images: az400acr.azurecr.io/az400webapp:${{ github.sha }}
+      
+      - name: Verify deployment and diagnose issues
+        run: |
+          echo "📋 Checking deployment status..."
+          STATE=$(az webapp show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query state -o tsv)
+          echo "App state: $STATE"
+          
+          echo ""
+          echo "🐳 Checking container configuration..."
+          az webapp config container show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }}
+          
+          echo ""
+          echo "📝 Checking application settings..."
+          az webapp config appsettings list --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='WEBSITES_PORT' || name=='PORT' || name=='KEY_VAULT_URL' || name=='APPLICATIONINSIGHTS_CONNECTION_STRING'].{Name:name, Value:value}" -o table
+          
+          echo ""
+          echo "📊 Fetching container logs (last 100 lines)..."
+          az webapp log download --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --log-file deployment.log 2>/dev/null || true
+          if [ -f deployment.log ]; then
+            echo "=== Recent logs ==="
+            tail -n 100 deployment.log
+          else
+            echo "⚠️  Log file not available yet"
+          fi
+          
+          echo ""
+          echo "🔧 Checking runtime status..."
+          az webapp show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query "{State:state, AvailabilityState:availabilityState, UsageState:usageState, OutboundIpAddresses:outboundIpAddresses}" -o json
       
       - name: Smoke test
         run: |
-          sleep 30
-          curl -f https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health || exit 1
+          echo "Waiting for container to start..."
+          # 最大2分間、10秒ごとにリトライ
+          for i in {1..12}; do
+            echo "Health check attempt $i/12..."
+            
+            # まずHTTPステータスコードを確認
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health || echo "000")
+            echo "HTTP Status: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✓ Health check passed"
+              curl -s https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health | jq . || true
+              exit 0
+            elif [ "$HTTP_CODE" = "503" ]; then
+              echo "⚠️  Service Unavailable (503) - Container may still be starting..."
+            elif [ "$HTTP_CODE" = "000" ]; then
+              echo "❌ Connection failed - Timeout or network error"
+            else
+              echo "⚠️  Unexpected status code: $HTTP_CODE"
+            fi
+            
+            if [ $i -lt 12 ]; then
+              echo "Waiting 10 seconds before retry..."
+              sleep 10
+            fi
+          done
+          
+          echo ""
+          echo "✗ Health check failed after 12 attempts (2 minutes)"
+          echo "=== Final diagnostics ==="
+          echo "Attempting to access root URL..."
+          curl -v https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/ 2>&1 | head -n 50
+          exit 1
+      
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Deployment failed - collecting diagnostic information ==="
+          az webapp log download --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --log-file failure.log 2>/dev/null || true
+          if [ -f failure.log ]; then
+            echo "=== Full log file ==="
+            cat failure.log
+          fi
+          
+          echo ""
+          echo "=== Container settings ==="
+          az webapp config show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }}
+      
+  # ジョブ2: ステージング環境へのデプロイ
+  # 目的: Dev環境での検証が成功後、Staging環境にデプロイし統合テストを実行
+  # 実行条件: deploy-devジョブが成功
+      - name: Notification
+        if: always()
+        run: |
+          echo "Deployment to Development: ${{ job.status }}"
   
   deploy-staging:
     name: Deploy to Staging
@@ -202,15 +386,19 @@ jobs:
     
     steps:
       - name: Login to Azure
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
       - name: Deploy to Staging Web App
-        uses: azure/webapps-deploy@v2
+        uses: azure/webapps-deploy@v3
         with:
+  # ジョブ3: 本番環境へのデプロイ
+  # 目的: Staging環境での検証が成功後、本番環境にデプロイし通知を送信
+  # 実行条件: deploy-stagingジョブが成功
+  # セキュリティ: GitHub Environmentsの承認機能により、手動承認後にデプロイ可能
           app-name: 'az400-staging-webapp'
-          images: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
+          images: az400acr.azurecr.io/az400webapp:${{ github.sha }}
       
       - name: Run integration tests
         run: |
@@ -227,19 +415,68 @@ jobs:
     
     steps:
       - name: Login to Azure
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
       - name: Deploy to Production Web App
-        uses: azure/webapps-deploy@v2
+        uses: azure/webapps-deploy@v3
         with:
           app-name: 'az400-prod-webapp'
-          images: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
+          images: az400acr.azurecr.io/az400webapp:${{ github.sha }}
       
       - name: Notify deployment
         run: |
           echo "Production deployment completed!"
+```
+
+**手順4: コミット＆プッシュ**
+
+```powershell
+# 1. ファイルをステージング
+git add .github/workflows/cd-github-actions.yml
+
+# 2. コミット
+git commit -m "feat: CD Pipeline追加（Dev/Staging/Prod段階的デプロイ）"
+
+# 3. プッシュ
+git push origin main
+```
+
+**手順5: 動作確認**
+
+```powershell
+# GitHub Actionsページを開く
+start "https://github.com/YOUR_USERNAME/az400-handson-bootcamp/actions"
+```
+
+**確認ポイント：**
+1. ✅ CI Pipeline（ci-github-actions.yml）が先に実行される
+2. ✅ CI成功後、CD Pipeline（cd-github-actions.yml）が自動的にトリガーされる
+3. ✅ Deploy to Development → Deploy to Staging → Deploy to Production の順に実行
+4. ✅ Production環境で承認待ち状態になる（Required reviewersを設定した場合）
+
+**手順6: Production承認（Required reviewers設定時）**
+
+1. GitHub Actions実行画面で「**Review deployments**」ボタンをクリック
+2. ✅ production環境をチェック
+3. **Approve and deploy** をクリック
+4. Productionデプロイが開始される
+
+**トラブルシューティング：**
+
+**Q: "Environment not found" エラーが出る**
+- A: GitHub SettingsでEnvironments（development/staging/production）を作成してください
+
+**Q: CD Pipelineがトリガーされない**
+- A: `workflow_run.conclusion == 'success'` の条件を確認。CI Pipelineが成功している必要があります
+
+**Q: Web App名が違う**
+- A: YAMLファイルの `AZURE_WEBAPP_NAME` を実際のWeb App名に変更してください
+
+```powershell
+# 実際のリソース名を確認
+az webapp list -g rg-az400-handson --query "[].name" -o table
 ```
 
 ---
@@ -278,6 +515,8 @@ updates:
 
 #### 2.2 CodeQL設定
 
+**目的**: GitHubの静的解析ツールCodeQLを使用して、セキュリティ脆弱性とコード品質の問題を自動検出します。push/PR時および毎週月曜の定期スキャンで実行されます。
+
 **.github/workflows/security-scan.yml**:
 
 ```yaml
@@ -292,6 +531,9 @@ on:
     - cron: '0 0 * * 1'  # 毎週月曜日
 
 jobs:
+  # CodeQLによる静的セキュリティ分析
+  # 目的: JavaScriptコードの脆弱性、バグ、コード品質問題を検出しGitHub Securityに結果を送信
+  # 実行頻度: push/PR時 + 毎週月曜日の定期スキャン
   codeql:
     name: CodeQL Analysis
     runs-on: ubuntu-latest
@@ -316,6 +558,131 @@ jobs:
         uses: github/codeql-action/analyze@v2
 ```
 
+#### 2.3 セキュリティ脆弱性の対処
+
+**目的**: DependabotやGitHub Securityで検出された依存関係の脆弱性を修正します。
+
+**手順1: 脆弱性の確認**
+
+```powershell
+# 1. Webアプリケーションディレクトリに移動
+cd src/webapp
+
+# 2. npm auditで脆弱性を確認
+npm audit
+
+# 3. 詳細表示
+npm audit --json
+```
+
+**手順2: GitHub Securityで確認**
+
+```powershell
+# GitHub Securityページを開く
+start "https://github.com/YOUR_USERNAME/az400-handson-bootcamp/security/dependabot"
+```
+
+**よくある脆弱性とその対処：**
+
+1. **brace-expansion: Denial of Service**
+   - 影響: ブレース展開処理でのDoS攻撃
+   - 対処: `npm audit fix`で自動更新
+
+2. **ip-address: XSS vulnerability**
+   - 影響: IPv6アドレス表示メソッドでのXSS
+   - 対処: パッケージバージョンアップ
+
+3. **picomatch: Data integrity & ReDoS**
+   - 影響: 正規表現DoSとデータ整合性の問題
+   - 対処: 最新バージョンへ更新
+
+**手順3: 自動修正の実行**
+
+```powershell
+# 1. 自動修正を試行（破壊的でない変更のみ）
+npm audit fix
+
+# 2. 修正結果を確認
+npm audit
+
+# 3. まだ脆弱性が残っている場合、強制修正を検討
+# ⚠️ 警告: これは破壊的変更を含む可能性があります
+npm audit fix --force
+
+# 4. テストを実行して動作確認
+npm test
+```
+
+**手順4: 手動修正（自動修正できない場合）**
+
+```powershell
+# 1. 特定パッケージを最新バージョンに更新
+npm update brace-expansion
+npm update ip-address
+npm update picomatch
+
+# 2. または、特定バージョンをインストール
+npm install brace-expansion@latest
+npm install ip-address@latest
+npm install picomatch@latest
+
+# 3. package-lock.jsonを再生成
+npm install
+
+# 4. テストを実行
+npm test
+```
+
+**手順5: 変更のコミット**
+
+```powershell
+# 1. 変更ファイルを確認
+git status
+
+# 2. package.jsonとpackage-lock.jsonをステージング
+git add src/webapp/package.json src/webapp/package-lock.json
+
+# 3. セキュリティ修正コミット
+git commit -m "fix: セキュリティ脆弱性の修正（brace-expansion, ip-address, picomatch）"
+
+# 4. プッシュ
+git push origin main
+```
+
+**手順6: Dependabot PRの対処**
+
+DependabotがPRを自動作成した場合：
+
+1. **GitHub Web UIでPRを確認**
+   ```powershell
+   start "https://github.com/YOUR_USERNAME/az400-handson-bootcamp/pulls"
+   ```
+
+2. **PRの内容を確認**:
+   - 変更内容（package.json, package-lock.json）
+   - CI/CDが成功しているか
+   - 互換性情報
+
+3. **マージ**:
+   - ✅ CI/CDが成功 → **Merge pull request**
+   - ❌ CI/CDが失敗 → ログ確認、手動修正
+
+**ベストプラクティス：**
+
+✅ **定期的なチェック**: 毎週1回 `npm audit` を実行  
+✅ **Dependabot有効化**: 自動PR作成で脆弱性を早期発見  
+✅ **テストの徹底**: 修正後は必ずテスト実行  
+✅ **段階的適用**: Dev → Staging → Prod の順に修正を展開  
+✅ **ロールバック準備**: 問題が発生した場合のロールバック手順を用意  
+
+**AZ-400試験のポイント：**
+
+- Q: "依存関係の脆弱性を定期的にチェックする方法は？"
+- A: Dependabot設定 + `npm audit` の定期実行
+
+- Q: "本番環境への影響を最小限にするには？"
+- A: Dev/Stagingで検証後、Production適用
+
 ---
 
 ## 📋 午後セッション（3-4時間）
@@ -323,6 +690,8 @@ jobs:
 ### ステップ 3: Azure Pipelines実装（120分）
 
 #### 3.1 Azure Pipelines YAML作成
+
+**目的**: Azure DevOpsのネイティブCI/CDツールであるAzure Pipelinesを使用して、GitHub Actionsと同等の機能を実装します。Multi-stage Pipelineによる段階的デプロイと、Branch Policyによる品質ゲート制御が特徴です。
 
 **.azure/pipelines/azure-pipelines.yml**:
 
@@ -349,9 +718,13 @@ variables:
   azureSubscription: 'AzureServiceConnection'
 
 stages:
+  # ステージ1: ビルドとテスト
+  # 目的: アプリケーションのビルド、テスト実行、Dockerイメージ作成をパラレルに実行
   - stage: Build
     displayName: 'Build and Test'
     jobs:
+      # ジョブ1: アプリケーションビルドとテスト
+      # 目的: Node.js依存関係インストール、テスト実行、テスト結果の発行
       - job: BuildJob
         displayName: 'Build Application'
         pool:
@@ -379,6 +752,9 @@ stages:
               testResultsFiles: '**/test-results.xml'
               failTaskOnFailedTests: true
       
+      # ジョブ2: Dockerイメージビルド
+      # 目的: BuildJobの成功後、DockerイメージをビルドしてACRにpush
+      # 依存関係: BuildJobの成功が必須
       - job: DockerBuild
         displayName: 'Build Docker Image'
         dependsOn: BuildJob
@@ -397,11 +773,17 @@ stages:
                 $(Build.BuildId)
                 latest
 
+  # ステージ2: 開発環境へのデプロイ
+  # 目的: Buildステージ成功後、mainブランチのみDev環境にデプロイ
+  # 実行条件: Buildステージが成功 AND mainブランチ
   - stage: DeployDev
     displayName: 'Deploy to Development'
     dependsOn: Build
     condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
     jobs:
+      # デプロイメントジョブ: Development環境
+      # 目的: ACRのDockerイメージをAzure Web Appにデプロイ
+      # 特徴: Azure DevOps Environmentsによる承認・監査機能
       - deployment: DeployJob
         displayName: 'Deploy to Dev'
         environment: 'development'
@@ -418,10 +800,15 @@ stages:
                     appName: 'az400-dev-webapp'
                     containers: '$(acrName).azurecr.io/az400webapp:$(Build.BuildId)'
 
+  # ステージ3: ステージング環境へのデプロイ
+  # 目的: DeployDevステージ成功後、Staging環境にデプロイ
+  # 実行条件: DeployDevステージが成功
   - stage: DeployStaging
     displayName: 'Deploy to Staging'
     dependsOn: DeployDev
     jobs:
+      # デプロイメントジョブ: Staging環境
+      # 目的: 統合テスト環境へのデプロイと検証
       - deployment: DeployJob
         displayName: 'Deploy to Staging'
         environment: 'staging'
@@ -438,10 +825,17 @@ stages:
                     appName: 'az400-staging-webapp'
                     containers: '$(acrName).azurecr.io/az400webapp:$(Build.BuildId)'
 
+  # ステージ4: 本番環境へのデプロイ
+  # 目的: DeployStagingステージ成功後、Production環境にデプロイ
+  # 実行条件: DeployStagingステージが成功
+  # セキュリティ: Azure DevOps Environmentsの承認機能により、手動承認後にデプロイ可能
   - stage: DeployProd
     displayName: 'Deploy to Production'
     dependsOn: DeployStaging
     jobs:
+      # デプロイメントジョブ: Production環境
+      # 目的: 本番環境への最終デプロイ
+      # 特徴: Environment承認、デプロイメント履歴、ロールバック機能
       - deployment: DeployJob
         displayName: 'Deploy to Production'
         environment: 'production'

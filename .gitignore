@@ -28,10 +28,12 @@ yarn-error.log*
 # Logs
 logs/
 *.log
+webapp-logs/
 
 # バックアップファイル
 *.bak
 *.backup
+*.zip
 
 # OS
 .DS_Store

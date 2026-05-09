@@ -26,20 +26,50 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
+      - name: Check Web App existence
+        run: |
+          echo "🔍 Verifying Web App exists..."
+          if ! az webapp show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} &>/dev/null; then
+            echo "❌ ERROR: Web App '${{ env.AZURE_WEBAPP_NAME }}' not found in resource group '${{ env.RESOURCE_GROUP }}'"
+            echo "Available web apps in resource group:"
+            az webapp list --resource-group ${{ env.RESOURCE_GROUP }} --query "[].{Name:name, State:state}" -o table
+            exit 1
+          fi
+          echo "✅ Web App exists"
+      
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           images: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
       
-      - name: Verify deployment
+      - name: Verify deployment and diagnose issues
         run: |
           echo "📋 Checking deployment status..."
           STATE=$(az webapp show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query state -o tsv)
           echo "App state: $STATE"
           
+          echo ""
           echo "🐳 Checking container configuration..."
           az webapp config container show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }}
+          
+          echo ""
+          echo "📝 Checking application settings..."
+          az webapp config appsettings list --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query "[?name=='WEBSITES_PORT' || name=='PORT' || name=='KEY_VAULT_URL' || name=='APPLICATIONINSIGHTS_CONNECTION_STRING'].{Name:name, Value:value}" -o table
+          
+          echo ""
+          echo "📊 Fetching container logs (last 100 lines)..."
+          az webapp log download --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --log-file deployment.log 2>/dev/null || true
+          if [ -f deployment.log ]; then
+            echo "=== Recent logs ==="
+            tail -n 100 deployment.log
+          else
+            echo "⚠️  Log file not available yet"
+          fi
+          
+          echo ""
+          echo "🔧 Checking runtime status..."
+          az webapp show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --query "{State:state, AvailabilityState:availabilityState, UsageState:usageState, OutboundIpAddresses:outboundIpAddresses}" -o json
       
       - name: Smoke test
         run: |
@@ -47,17 +77,49 @@ jobs:
           # 最大2分間、10秒ごとにリトライ
           for i in {1..12}; do
             echo "Health check attempt $i/12..."
-            if curl -f --max-time 10 https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health; then
+            
+            # まずHTTPステータスコードを確認
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health || echo "000")
+            echo "HTTP Status: $HTTP_CODE"
+            
+            if [ "$HTTP_CODE" = "200" ]; then
               echo "✓ Health check passed"
+              curl -s https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health | jq . || true
               exit 0
+            elif [ "$HTTP_CODE" = "503" ]; then
+              echo "⚠️  Service Unavailable (503) - Container may still be starting..."
+            elif [ "$HTTP_CODE" = "000" ]; then
+              echo "❌ Connection failed - Timeout or network error"
+            else
+              echo "⚠️  Unexpected status code: $HTTP_CODE"
             fi
+            
             if [ $i -lt 12 ]; then
               echo "Waiting 10 seconds before retry..."
               sleep 10
             fi
           done
+          
+          echo ""
           echo "✗ Health check failed after 12 attempts (2 minutes)"
+          echo "=== Final diagnostics ==="
+          echo "Attempting to access root URL..."
+          curl -v https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/ 2>&1 | head -n 50
           exit 1
+      
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Deployment failed - collecting diagnostic information ==="
+          az webapp log download --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }} --log-file failure.log 2>/dev/null || true
+          if [ -f failure.log ]; then
+            echo "=== Full log file ==="
+            cat failure.log
+          fi
+          
+          echo ""
+          echo "=== Container settings ==="
+          az webapp config show --name ${{ env.AZURE_WEBAPP_NAME }} --resource-group ${{ env.RESOURCE_GROUP }}
       
       - name: Notification
         if: always()
