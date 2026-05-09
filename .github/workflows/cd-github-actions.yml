@@ -43,12 +43,24 @@ jobs:
           IMAGE_PATH="${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}"
           echo "Image: $IMAGE_PATH"
           
+          # Linux環境でパイプ文字を安全に扱うため、シングルクォートで囲む
           az webapp config set \
             --name ${{ env.AZURE_WEBAPP_NAME }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --linux-fx-version "DOCKER|$IMAGE_PATH"
+            --linux-fx-version 'DOCKER|'"$IMAGE_PATH"
           
           echo "✅ Container image configured"
+          
+          # 設定確認
+          ACTUAL_FX=$(az webapp config show -n ${{ env.AZURE_WEBAPP_NAME }} -g ${{ env.RESOURCE_GROUP }} --query 'linuxFxVersion' -o tsv)
+          echo "Actual linuxFxVersion: $ACTUAL_FX"
+          
+          if [[ "$ACTUAL_FX" != *"${{ secrets.ACR_LOGIN_SERVER }}"* ]]; then
+            echo "❌ ERROR: Registry URL missing in linuxFxVersion!"
+            echo "Expected: DOCKER|$IMAGE_PATH"
+            echo "Actual: $ACTUAL_FX"
+            exit 1
+          fi
       
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
@@ -174,9 +186,17 @@ jobs:
           az webapp config set \
             --name 'az400-staging-webapp' \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --linux-fx-version "DOCKER|$IMAGE_PATH"
+            --linux-fx-version 'DOCKER|'"$IMAGE_PATH"
           
           echo "✅ Container image configured"
+          
+          ACTUAL_FX=$(az webapp config show -n 'az400-staging-webapp' -g ${{ env.RESOURCE_GROUP }} --query 'linuxFxVersion' -o tsv)
+          echo "Actual linuxFxVersion: $ACTUAL_FX"
+          
+          if [[ "$ACTUAL_FX" != *"${{ secrets.ACR_LOGIN_SERVER }}"* ]]; then
+            echo "❌ ERROR: Registry URL missing!"
+            exit 1
+          fi
       
       - name: Deploy to Staging Web App
         uses: azure/webapps-deploy@v3
@@ -245,9 +265,17 @@ jobs:
           az webapp config set \
             --name 'az400-prod-webapp' \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --linux-fx-version "DOCKER|$IMAGE_PATH"
+            --linux-fx-version 'DOCKER|'"$IMAGE_PATH"
           
           echo "✅ Container image configured"
+          
+          ACTUAL_FX=$(az webapp config show -n 'az400-prod-webapp' -g ${{ env.RESOURCE_GROUP }} --query 'linuxFxVersion' -o tsv)
+          echo "Actual linuxFxVersion: $ACTUAL_FX"
+          
+          if [[ "$ACTUAL_FX" != *"${{ secrets.ACR_LOGIN_SERVER }}"* ]]; then
+            echo "❌ ERROR: Registry URL missing!"
+            exit 1
+          fi
       
       - name: Deploy to Production Web App
         uses: azure/webapps-deploy@v3
