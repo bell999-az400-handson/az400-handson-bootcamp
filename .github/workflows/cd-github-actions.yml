@@ -78,9 +78,21 @@ jobs:
           for i in {1..12}; do
             echo "Health check attempt $i/12..."
             
-            # まずHTTPステータスコードを確認
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health || echo "000")
-            echo "HTTP Status: $HTTP_CODE"
+            # HTTPステータスコードを確認（エラーハンドリング改善）
+            set +e  # 一時的にエラーで停止しない
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health 2>/dev/null)
+            CURL_EXIT=$?
+            set -e  # 再度エラーで停止するように
+            
+            # curlが失敗した場合は000をセット
+            if [ $CURL_EXIT -ne 0 ] || [ -z "$HTTP_CODE" ]; then
+              HTTP_CODE="000"
+            fi
+            
+            # 出力のクリーンアップ（予期しない文字を除去）
+            HTTP_CODE=$(echo "$HTTP_CODE" | tr -cd '0-9' | tail -c 3)
+            
+            echo "HTTP Status: $HTTP_CODE (curl exit: $CURL_EXIT)"
             
             if [ "$HTTP_CODE" = "200" ]; then
               echo "✓ Health check passed"
@@ -152,10 +164,25 @@ jobs:
           # 最大2分間、10秒ごとにリトライ
           for i in {1..12}; do
             echo "Health check attempt $i/12..."
-            if curl -f --max-time 10 https://az400-staging-webapp.azurewebsites.net/health; then
+            
+            set +e
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://az400-staging-webapp.azurewebsites.net/health 2>/dev/null)
+            CURL_EXIT=$?
+            set -e
+            
+            if [ $CURL_EXIT -ne 0 ] || [ -z "$HTTP_CODE" ]; then
+              HTTP_CODE="000"
+            fi
+            
+            HTTP_CODE=$(echo "$HTTP_CODE" | tr -cd '0-9' | tail -c 3)
+            echo "HTTP Status: $HTTP_CODE (curl exit: $CURL_EXIT)"
+            
+            if [ "$HTTP_CODE" = "200" ]; then
               echo "✓ Health check passed"
+              curl -s https://az400-staging-webapp.azurewebsites.net/health | jq . || true
               exit 0
             fi
+            
             if [ $i -lt 12 ]; then
               echo "Waiting 10 seconds before retry..."
               sleep 10
@@ -195,10 +222,25 @@ jobs:
           # 最大2分間、10秒ごとにリトライ
           for i in {1..12}; do
             echo "Health check attempt $i/12..."
-            if curl -f --max-time 10 https://az400-prod-webapp.azurewebsites.net/health; then
+            
+            set +e
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://az400-prod-webapp.azurewebsites.net/health 2>/dev/null)
+            CURL_EXIT=$?
+            set -e
+            
+            if [ $CURL_EXIT -ne 0 ] || [ -z "$HTTP_CODE" ]; then
+              HTTP_CODE="000"
+            fi
+            
+            HTTP_CODE=$(echo "$HTTP_CODE" | tr -cd '0-9' | tail -c 3)
+            echo "HTTP Status: $HTTP_CODE (curl exit: $CURL_EXIT)"
+            
+            if [ "$HTTP_CODE" = "200" ]; then
               echo "✓ Production health check passed"
+              curl -s https://az400-prod-webapp.azurewebsites.net/health | jq . || true
               exit 0
             fi
+            
             if [ $i -lt 12 ]; then
               echo "Waiting 10 seconds before retry..."
               sleep 10
