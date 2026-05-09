@@ -479,6 +479,138 @@ start "https://github.com/YOUR_USERNAME/az400-handson-bootcamp/actions"
 az webapp list -g rg-az400-handson --query "[].name" -o table
 ```
 
+**Q: "Application Error" が表示される**
+- A: Free (F1) App Service Planの制限超過が原因です。Basic (B1) へアップグレードが必要です
+
+```powershell
+# App Service PlanのSKU確認
+az appservice plan show -n az400-dev-asp -g rg-az400-handson --query "{sku:sku.name,tier:sku.tier}" -o table
+
+# Basic (B1) へアップグレード（推奨）
+az appservice plan update -n az400-dev-asp -g rg-az400-handson --sku B1
+
+# Web App再起動
+az webapp restart -n az400-dev-webapp -g rg-az400-handson
+```
+
+**理由**: Free (F1) tierは以下の制限があり、コンテナワークロードには不適切です：
+- CPU時間: 60分/日のみ
+- Always On: 利用不可
+- 制限超過で自動停止 → Application Error
+
+**Q: Azure Diagnoseで "Health Check not configured" 警告が出る**
+- A: Health Check機能を有効化してください
+
+```powershell
+# Health Checkパスを設定（/healthエンドポイントを使用）
+az webapp update -n az400-dev-webapp -g rg-az400-handson --set siteConfig.healthCheckPath="/health"
+
+# 設定確認
+az webapp config show -n az400-dev-webapp -g rg-az400-handson --query "healthCheckPath" -o tsv
+```
+
+**効果**: 
+- 1分ごとに全インスタンスの `/health` エンドポイントをチェック
+- 不健全なインスタンスを自動的にローテーションから除外
+- 本番環境では必須の設定
+
+**Q: "Single instance warning" が出る**
+- A: 学習環境では1インスタンスで十分です。本番環境では2インスタンス以上を推奨
+
+```powershell
+# 手動スケール（2インスタンス）
+az appservice plan update -n az400-dev-asp -g rg-az400-handson --set sku.capacity=2
+
+# 自動スケール設定（CPU 70%以上で自動増加）
+az monitor autoscale create `
+  --resource-group rg-az400-handson `
+  --resource az400-dev-asp `
+  --resource-type Microsoft.Web/serverfarms `
+  --name autoscale-rule `
+  --min-count 1 `
+  --max-count 3 `
+  --count 1
+
+az monitor autoscale rule create `
+  --resource-group rg-az400-handson `
+  --autoscale-name autoscale-rule `
+  --condition "Percentage CPU > 70 avg 5m" `
+  --scale out 1
+```
+
+**💡 AZ-400試験対策ポイント**:
+- ✅ **App Service Plan SKU選択**: Free/Basic/Standard/Premiumの違いと使い分け
+- ✅ **Health Check**: 本番環境では必須、インスタンスの健全性監視
+- ✅ **高可用性**: 複数インスタンス + 自動スケールでダウンタイム削減
+- ✅ **コスト最適化**: 学習環境はBasic B1 (1インスタンス)、本番はStandard以上 (2+インスタンス)
+
+**Q: デプロイ後に HTTP 503 が続き、コンテナが起動しない**
+- A: `linuxFxVersion`のイメージパスにレジストリURLが含まれているか確認
+
+**症状**: 
+- CD Pipeline成功後もHTTP 503エラーが継続
+- Azure Portal → Deployment Center で "Failed to pull image: docker.io/library/az400webapp" エラー
+- 正しいACRからではなく、Docker Hubから取得しようとしている
+
+**原因診断**:
+```powershell
+# 現在の設定を確認
+az webapp config show -n az400-dev-webapp -g rg-az400-handson --query "linuxFxVersion" -o tsv
+
+# ❌ 間違った形式（レジストリURLが欠落）
+# DOCKER|/az400webapp:bdae8a7...
+
+# ✅ 正しい形式
+# DOCKER|az400acr.azurecr.io/az400webapp:bdae8a7...
+```
+
+**解決策1: CI/CD Pipelineを再実行**（推奨）
+```powershell
+# GitHubで以下を実行:
+# 1. Actions タブ → "CI - GitHub Actions" → 最新run → "Re-run all jobs"
+# 2. CI成功後、CD Pipelineが自動実行
+# 3. 修正版のCD PipelineがlinuxFxVersionを正しく設定
+```
+
+**解決策2: 手動でイメージパスを修正**
+```powershell
+# PowerShellではパイプ文字(|)が問題になるため、bashを使用
+bash -c "az webapp config set --name az400-dev-webapp --resource-group rg-az400-handson --linux-fx-version 'DOCKER|az400acr.azurecr.io/az400webapp:latest'"
+
+# Web Appを再起動
+az webapp restart -n az400-dev-webapp -g rg-az400-handson
+
+# 60秒待機してからヘルスチェック
+Start-Sleep -Seconds 60
+curl https://az400-dev-webapp.azurewebsites.net/health
+```
+
+**解決策3: Azure Portal UIで修正**
+1. Azure Portal → App Services → az400-dev-webapp
+2. Deployment Center → Registry settings
+3. Image and tag: `az400acr.azurecr.io/az400webapp:latest`
+4. Save → Web Appが自動的に再起動
+
+**根本原因**: 
+- `azure/webapps-deploy@v3`の`images`パラメータだけでは、`linuxFxVersion`が正しく更新されないことがある
+- CD Pipelineで`az webapp config set --linux-fx-version`を明示的に実行する必要がある
+
+**修正版CD Pipeline** (2024年5月対応済み):
+```yaml
+- name: Set container image explicitly
+  run: |
+    IMAGE_PATH="${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}"
+    az webapp config set \
+      --name ${{ env.AZURE_WEBAPP_NAME }} \
+      --resource-group ${{ env.RESOURCE_GROUP }} \
+      --linux-fx-version "DOCKER|$IMAGE_PATH"
+
+- name: Deploy to Azure Web App
+  uses: azure/webapps-deploy@v3
+  with:
+    images: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
+```
+
 ---
 
 ### ステップ 2: セキュリティスキャン（60分）

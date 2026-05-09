@@ -37,6 +37,19 @@ jobs:
           fi
           echo "✅ Web App exists"
       
+      - name: Set container image explicitly
+        run: |
+          echo "🐳 Configuring Web App to use ACR image..."
+          IMAGE_PATH="${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}"
+          echo "Image: $IMAGE_PATH"
+          
+          az webapp config set \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --linux-fx-version "DOCKER|$IMAGE_PATH"
+          
+          echo "✅ Container image configured"
+      
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         with:
@@ -152,6 +165,19 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
       
+      - name: Set container image explicitly
+        run: |
+          echo "🐳 Configuring Staging Web App to use ACR image..."
+          IMAGE_PATH="${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}"
+          echo "Image: $IMAGE_PATH"
+          
+          az webapp config set \
+            --name 'az400-staging-webapp' \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --linux-fx-version "DOCKER|$IMAGE_PATH"
+          
+          echo "✅ Container image configured"
+      
       - name: Deploy to Staging Web App
         uses: azure/webapps-deploy@v3
         with:
@@ -209,6 +235,19 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Set container image explicitly
+        run: |
+          echo "🐳 Configuring Production Web App to use ACR image..."
+          IMAGE_PATH="${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}"
+          echo "Image: $IMAGE_PATH"
+          
+          az webapp config set \
+            --name 'az400-prod-webapp' \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --linux-fx-version "DOCKER|$IMAGE_PATH"
+          
+          echo "✅ Container image configured"
       
       - name: Deploy to Production Web App
         uses: azure/webapps-deploy@v3
