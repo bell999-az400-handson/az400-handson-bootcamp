@@ -68,6 +68,33 @@ jobs:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           images: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
       
+      - name: Re-apply container image configuration (post-deployment fix)
+        run: |
+          echo "🔧 Fixing linuxFxVersion after azure/webapps-deploy@v3..."
+          echo "Issue: azure/webapps-deploy@v3 may override linuxFxVersion and remove registry URL"
+          
+          IMAGE_PATH="${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}"
+          echo "Re-applying: DOCKER|$IMAGE_PATH"
+          
+          # デプロイ後に正しいlinuxFxVersionを再設定
+          az webapp config set \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --linux-fx-version 'DOCKER|'"$IMAGE_PATH"
+          
+          # 設定確認
+          ACTUAL_FX=$(az webapp config show -n ${{ env.AZURE_WEBAPP_NAME }} -g ${{ env.RESOURCE_GROUP }} --query 'linuxFxVersion' -o tsv)
+          echo "✅ Verified linuxFxVersion: $ACTUAL_FX"
+          
+          if [[ "$ACTUAL_FX" != *"${{ secrets.ACR_LOGIN_SERVER }}"* ]]; then
+            echo "❌ ERROR: Registry URL still missing!"
+            echo "Expected: DOCKER|$IMAGE_PATH"
+            echo "Actual: $ACTUAL_FX"
+            exit 1
+          fi
+          
+          echo "✅ Container image configuration fixed successfully"
+      
       - name: Verify deployment and diagnose issues
         run: |
           echo "📋 Checking deployment status..."
@@ -232,6 +259,29 @@ jobs:
           app-name: 'az400-staging-webapp'
           images: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
       
+      - name: Re-apply container image configuration (post-deployment fix)
+        run: |
+          echo "🔧 Fixing linuxFxVersion after azure/webapps-deploy@v3..."
+          echo "Issue: azure/webapps-deploy@v3 may override linuxFxVersion and remove registry URL"
+          
+          IMAGE_PATH="${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}"
+          echo "Re-applying: DOCKER|$IMAGE_PATH"
+          
+          az webapp config set \
+            --name 'az400-staging-webapp' \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --linux-fx-version 'DOCKER|'"$IMAGE_PATH"
+          
+          ACTUAL_FX=$(az webapp config show -n 'az400-staging-webapp' -g ${{ env.RESOURCE_GROUP }} --query 'linuxFxVersion' -o tsv)
+          echo "✅ Verified linuxFxVersion: $ACTUAL_FX"
+          
+          if [[ "$ACTUAL_FX" != *"${{ secrets.ACR_LOGIN_SERVER }}"* ]]; then
+            echo "❌ ERROR: Registry URL still missing!"
+            exit 1
+          fi
+          
+          echo "✅ Container image configuration fixed successfully"
+      
       - name: Run integration tests
         run: |
           echo "🔍 Running integration tests..."
@@ -320,6 +370,29 @@ jobs:
         with:
           app-name: 'az400-prod-webapp'
           images: ${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}
+      
+      - name: Re-apply container image configuration (post-deployment fix)
+        run: |
+          echo "🔧 Fixing linuxFxVersion after azure/webapps-deploy@v3..."
+          echo "Issue: azure/webapps-deploy@v3 may override linuxFxVersion and remove registry URL"
+          
+          IMAGE_PATH="${{ secrets.ACR_LOGIN_SERVER }}/az400webapp:${{ github.sha }}"
+          echo "Re-applying: DOCKER|$IMAGE_PATH"
+          
+          az webapp config set \
+            --name 'az400-prod-webapp' \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --linux-fx-version 'DOCKER|'"$IMAGE_PATH"
+          
+          ACTUAL_FX=$(az webapp config show -n 'az400-prod-webapp' -g ${{ env.RESOURCE_GROUP }} --query 'linuxFxVersion' -o tsv)
+          echo "✅ Verified linuxFxVersion: $ACTUAL_FX"
+          
+          if [[ "$ACTUAL_FX" != *"${{ secrets.ACR_LOGIN_SERVER }}"* ]]; then
+            echo "❌ ERROR: Registry URL still missing!"
+            exit 1
+          fi
+          
+          echo "✅ Container image configuration fixed successfully"
       
       - name: Production smoke test
         run: |
