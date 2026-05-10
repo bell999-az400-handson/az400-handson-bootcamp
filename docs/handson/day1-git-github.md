@@ -691,6 +691,108 @@ git push origin v1.1.0
 - Q: "バグ修正を含むリリースです。11.2.0の次は？"
 - A: 11.2.1（PATCH を上げる）
 
+#### 3.3 Branch Protection Rules 基本設定
+
+**目的**: CODEOWNERSを有効化し、mainブランチを保護してPRレビューワークフローを強制します。
+
+**⚠️ 学習環境での重要な注意点**:
+
+GitHubでは**自分が作成したPRは自分で承認（Approve）できません**。これはセルフレビュー防止のための仕様です。
+
+学習環境（1人で演習する場合）では、以下のいずれかの対応が必要です：
+
+- **推奨**: `Require approvals` を **0** に設定（承認不要）
+- または: 別のチームメンバーに承認を依頼
+- または: 別のGitHubアカウントでログインして承認
+
+**設定手順**:
+
+```powershell
+# GitHub Web UIで設定
+start "https://github.com/YOUR_ORG/az400-handson-bootcamp/settings/branches"
+```
+
+1. **GitHub リポジトリ** > **Settings** > **Branches**
+2. **Branch protection rules** > **Add rule**
+3. **Branch name pattern**: `main`
+4. 以下の基本設定を有効化:
+
+**学習環境向け設定（推奨）**:
+
+- ✅ **Require a pull request before merging**
+  - **Require approvals**: **0**（⭐学習環境では0に設定）
+  - ⬜ **Dismiss stale pull request approvals when new commits are pushed**（任意）
+  - ✅ **Require review from Code Owners**（CODEOWNERSを有効化）
+
+- ✅ **Require conversation resolution before merging**
+  - すべてのコメントを解決してからマージ
+
+**本番環境向け設定（参考）**:
+
+本番環境では以下のように設定します：
+
+- ✅ **Require a pull request before merging**
+  - **Require approvals**: `1` または `2`
+  - ✅ **Dismiss stale pull request approvals when new commits are pushed**
+  - ✅ **Require review from Code Owners**
+
+- ✅ **Require status checks to pass before merging**（CI/CD実装後）
+  - ✅ **Require branches to be up to date before merging**
+  - **Status checks that are required**: `build`, `test` など
+
+- ✅ **Require linear history**: squash/rebaseのみ許可
+- ❌ **Allow force pushes**: オフ（履歴保護）
+- ❌ **Allow deletions**: オフ（ブランチ保護）
+
+**CLI で設定する場合（学習環境向け）**:
+
+```powershell
+# 承認数を0に設定（学習環境）
+gh api -X PATCH repos/YOUR_ORG/az400-handson-bootcamp/branches/main/protection/required_pull_request_reviews -f required_approving_review_count=0 -f require_code_owner_reviews=true -f dismiss_stale_reviews=false
+```
+
+**動作確認**:
+
+```powershell
+# 設定確認
+gh api repos/YOUR_ORG/az400-handson-bootcamp/branches/main/protection/required_pull_request_reviews --jq '{require_code_owner_reviews, required_approving_review_count}'
+
+# 期待される出力（学習環境）:
+# {
+#   "require_code_owner_reviews": true,
+#   "required_approving_review_count": 0
+# }
+```
+
+**トラブルシューティング**:
+
+**Q: "Review required" エラーが出てマージできない**
+
+A: 以下を確認してください：
+
+1. **自分のPRを自分で承認しようとしていないか？**
+   - GitHubでは自分のPRは自分で承認できません
+   - 解決策: `Require approvals` を **0** に設定
+
+2. **CODEOWNERSチームにメンバーがいるか？**
+   - Organization > Teams で確認
+   - 最低1名のメンバーが必要
+
+3. **Branch Protection設定が反映されていない場合**
+   - 空コミットでPRをリフレッシュ:
+     ```powershell
+     git commit --allow-empty -m "chore: refresh PR"
+     git push
+     ```
+
+**AZ-400試験のポイント**:
+
+- Q: "PRマージ前に必ずレビューを要求するには？"
+- A: Branch Protection Rulesで「Require a pull request before merging」を有効化
+
+- Q: "CODEOWNERSを有効にするには？"
+- A: Branch Protection Rulesで「Require review from Code Owners」を有効化
+
 ---
 
 ## 📋 午後セッション（2-3時間）
@@ -699,7 +801,7 @@ git push origin v1.1.0
 
 #### 4.1 Branch Protection詳細設定（オプション）
 
-**既にステップ 1.3 でBranch Protection基本設定を完了している場合は、このステップをスキップするか、CI/CD実装後に追加設定してください。**
+**既にステップ 3.3 でBranch Protection基本設定を完了している場合は、このステップをスキップするか、CI/CD実装後に追加設定してください。**
 
 GitHub > Settings > Branches > 既存のルールを編集:
 
