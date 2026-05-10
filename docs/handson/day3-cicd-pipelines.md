@@ -1000,50 +1000,23 @@ Azure DevOps > Project Settings > Service connections:
    - Subscription: 選択
    - Azure Container Registry: `az400acr`
 
-#### 3.3 Branch Protection設定
+#### 3.3 Branch Protection CI/CD統合設定
 
-**本ハンズオンではGitHubリポジトリを使用するため、GitHub Branch Protection Rulesを設定します。**
+> **📌 前提**: 基本的なBranch Protection設定は **Day 1 ステップ3.3** で完了済みです。ここではCI/CD統合時の追加設定を行います。
 
-> **📝 注意**: Azure Repos使用時は「Branch Policies」、GitHub使用時は「Branch Protection Rules」となります。
+**Day 3で追加する設定**:
 
-**設定手順**:
+1. **GitHub リポジトリ** > **Settings** > **Branches** > 既存のルール編集
+2. **Require status checks to pass before merging** を有効化:
+   - ✅ **Require branches to be up to date before merging**
+   - **Status checks that are required**:
+     - `build` (GitHub Actionsのビルドジョブ)
+     - `test` (GitHub Actionsのテストジョブ)
+     - その他、`.github/workflows/ci.yml` で定義したジョブ名
 
-1. **GitHub リポジトリ** > **Settings** > **Branches**
-2. **Branch protection rules** > **Add rule**
-3. **Branch name pattern**: `main`
-4. 以下の設定を有効化:
+**Work Item連携の自動チェック（オプション）**:
 
-**必須設定**:
-
-- ✅ **Require a pull request before merging**
-  - **Require approvals**: `1`
-  - ✅ **Dismiss stale pull request approvals when new commits are pushed**
-  - ✅ **Require review from Code Owners**（`.github/CODEOWNERS`設定済みの場合）
-
-- ✅ **Require status checks to pass before merging**
-  - ✅ **Require branches to be up to date before merging**
-  - **Status checks that are required**:
-    - `build` (CI - GitHub Actionsワークフロー)
-    - `test` (テストジョブ)
-    - その他、定義したジョブ名
-
-- ✅ **Require conversation resolution before merging**
-  - すべてのコメントを解決してからマージ
-
-**推奨設定**:
-
-- ✅ **Require linear history**: squash/rebaseのみ許可（クリーンな履歴）
-- ✅ **Include administrators**: 管理者にもルールを適用
-- ❌ **Allow force pushes**: オフ（履歴保護）
-- ❌ **Allow deletions**: オフ（ブランチ保護）
-
-**Work Item連携について**:
-
-GitHubには「Work item linking必須」機能がないため、以下で代替:
-
-1. **コミットメッセージ規約**: `AB#123`形式を必須化
-2. **PR テンプレート**（`.github/pull_request_template.md`）で明示
-3. **GitHub Actions で自動チェック**（オプション）:
+GitHub Actions で PR タイトルに `AB#123` 形式が含まれているかチェック:
 
 ```yaml
 - name: Check Work Item Reference
@@ -1054,9 +1027,17 @@ GitHubには「Work item linking必須」機能がないため、以下で代替
     fi
 ```
 
+**本番環境向け追加設定（参考）**:
+
+- ✅ **Require approvals**: `1` 以上（Day 1では学習のため `0`）
+- ✅ **Require linear history**: squash/rebaseのみ許可
+- ✅ **Include administrators**: 管理者にもルールを適用
+
+> **📝 注意**: Azure Repos使用時は「Branch Policies」で同様の設定を行います。
+
 **Azure Pipelines使用時の補足**:
 
-Azure Pipelinesを試験的に使用する場合（Day 3ステップ3）、Azure DevOpsで以下も設定可能:
+Azure Pipelinesを試験的に使用する場合（ステップ3）、Azure DevOpsで以下も設定可能:
 - Azure DevOps > Project Settings > Repositories > GitHub connection
 - Azure Pipelines の Build Validation を GitHub PR に統合可能
 
