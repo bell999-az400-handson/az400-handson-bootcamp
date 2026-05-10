@@ -1000,15 +1000,65 @@ Azure DevOps > Project Settings > Service connections:
    - Subscription: 選択
    - Azure Container Registry: `az400acr`
 
-#### 3.3 Branch Policy設定
+#### 3.3 Branch Protection設定
 
-Azure DevOps > Repos > Branches > main > Branch policies:
+**本ハンズオンではGitHubリポジトリを使用するため、GitHub Branch Protection Rulesを設定します。**
 
-- ✅ Require a minimum number of reviewers: 1
-- ✅ Build validation:
-  - Build pipeline: azure-pipelines.yml
-  - Policy requirement: Required
-- ✅ Work item linking: Required
+> **📝 注意**: Azure Repos使用時は「Branch Policies」、GitHub使用時は「Branch Protection Rules」となります。
+
+**設定手順**:
+
+1. **GitHub リポジトリ** > **Settings** > **Branches**
+2. **Branch protection rules** > **Add rule**
+3. **Branch name pattern**: `main`
+4. 以下の設定を有効化:
+
+**必須設定**:
+
+- ✅ **Require a pull request before merging**
+  - **Require approvals**: `1`
+  - ✅ **Dismiss stale pull request approvals when new commits are pushed**
+  - ✅ **Require review from Code Owners**（`.github/CODEOWNERS`設定済みの場合）
+
+- ✅ **Require status checks to pass before merging**
+  - ✅ **Require branches to be up to date before merging**
+  - **Status checks that are required**:
+    - `build` (CI - GitHub Actionsワークフロー)
+    - `test` (テストジョブ)
+    - その他、定義したジョブ名
+
+- ✅ **Require conversation resolution before merging**
+  - すべてのコメントを解決してからマージ
+
+**推奨設定**:
+
+- ✅ **Require linear history**: squash/rebaseのみ許可（クリーンな履歴）
+- ✅ **Include administrators**: 管理者にもルールを適用
+- ❌ **Allow force pushes**: オフ（履歴保護）
+- ❌ **Allow deletions**: オフ（ブランチ保護）
+
+**Work Item連携について**:
+
+GitHubには「Work item linking必須」機能がないため、以下で代替:
+
+1. **コミットメッセージ規約**: `AB#123`形式を必須化
+2. **PR テンプレート**（`.github/pull_request_template.md`）で明示
+3. **GitHub Actions で自動チェック**（オプション）:
+
+```yaml
+- name: Check Work Item Reference
+  run: |
+    if ! echo "${{ github.event.pull_request.title }}" | grep -qE 'AB#[0-9]+'; then
+      echo "❌ PR titleにWork Item参照(AB#123)がありません"
+      exit 1
+    fi
+```
+
+**Azure Pipelines使用時の補足**:
+
+Azure Pipelinesを試験的に使用する場合（Day 3ステップ3）、Azure DevOpsで以下も設定可能:
+- Azure DevOps > Project Settings > Repositories > GitHub connection
+- Azure Pipelines の Build Validation を GitHub PR に統合可能
 
 ---
 
