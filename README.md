@@ -29,19 +29,69 @@ AZ-400試験対策のための**実践的なハンズオン環境**です。模�
 
 ```
 az400-handson-bootcamp/
+├── .azure/
+│   └── pipelines/
+│       └── azure-pipelines.yml         ← Azure Pipelines定義
 ├── .github/
-│   ├── copilot-instructions.md      ← Copilot最適化設定
-│   ├── CODEOWNERS                   ← コードオーナー設定
-│   └── workflows/                   ← GitHub Actions
-├── .azure/pipelines/                ← Azure Pipelines
-├── infra/bicep/                     ← インフラコード（Bicep）
-│   ├── main.bicep
-│   ├── modules/                     ← Key Vault、Web App等
-│   └── parameters/                  ← 環境別パラメータ
-├── src/webapp/                      ← サンプルWebアプリ（Node.js）
-├── docs/handson/                    ← Day 1-3の詳細手順書
-├── scripts/                         ← セットアップスクリプト、KQL
-└── WorkItems/                       ← Azure Boards Work Item CSV
+│   ├── workflows/                      ← GitHub Actions
+│   │   ├── ci-github-actions.yml       ← CI Pipeline
+│   │   ├── cd-github-actions.yml       ← CD Pipeline
+│   │   ├── security-scan.yml           ← セキュリティスキャン
+│   │   ├── deploy-secrets.yml          ← シークレット管理
+│   │   └── README.md
+│   ├── CODEOWNERS                      ← コードオーナー設定
+│   ├── copilot-instructions.md         ← Copilot最適化設定
+│   ├── dependabot.yml                  ← 依存関係更新自動化
+│   └── GITHUB_SECRETS_SETUP.md         ← GitHub Secrets設定手順
+├── docs/
+│   └── handson/                        ← ハンズオン詳細手順書
+│       ├── day1-git-github.md          ← Day 1: Git/GitHub高度操作
+│       ├── day2-azure-security.md      ← Day 2: Azure Security
+│       └── day3-cicd-pipelines.md      ← Day 3: CI/CD完全マスター
+├── infra/
+│   └── bicep/                          ← インフラコード（IaC）
+│       ├── main.bicep                  ← メインテンプレート
+│       ├── modules/                    ← モジュール
+│       │   ├── appinsights.bicep       ← Application Insights
+│       │   ├── keyvault.bicep          ← Key Vault
+│       │   └── webapp.bicep            ← Web App
+│       └── parameters/                 ← 環境別パラメータ
+│           ├── dev.parameters.json     ← Dev環境
+│           ├── staging.parameters.json ← Staging環境
+│           └── prod.parameters.json    ← Production環境
+├── scripts/
+│   ├── cleanup/
+│   │   └── cleanup-resources.sh        ← リソース削除スクリプト
+│   ├── kql/
+│   │   └── basic-queries.kql           ← Application Insights KQLクエリ
+│   └── setup/                          ← セットアップスクリプト
+│       ├── 01-create-resources.sh      ← Azureリソース作成
+│       ├── 02-configure-devops.sh      ← Azure DevOps設定
+│       ├── 03-link-boards-github.sh    ← Boards-GitHub統合
+│       ├── diagnose-webapp.ps1         ← Web App診断
+│       ├── import-workitems.ps1        ← Work Items一括作成
+│       ├── link-workitems.ps1          ← Work Items親子関係設定
+│       ├── set-keyvault-secrets.sh     ← Key Vaultシークレット設定
+│       ├── setup-github-secrets.ps1    ← GitHub Secrets設定
+│       ├── setup.ps1                   ← 統合セットアップ
+│       └── README.md
+├── src/
+│   └── webapp/                         ← サンプルWebアプリ（Node.js）
+│       ├── app.js                      ← アプリケーションコード
+│       ├── Dockerfile                  ← コンテナイメージ定義
+│       ├── package.json                ← Node.js依存関係
+│       ├── tests/
+│       │   └── app.test.js             ← 単体テスト
+│       └── README.md
+├── WorkItems/                          ← Azure Boards Work Items
+│   ├── az400-handson-workitems.csv     ← Work Items定義（66個）
+│   ├── workitem-id-mapping.csv         ← ID マッピング
+│   └── README.md
+├── .gitattributes                      ← Git属性設定
+├── .gitignore                          ← Git除外設定
+├── github_flow.md                      ← GitHub Flowブランチ戦略
+├── LEARNING-PATH.md                    ← 3日間学習プラン詳細
+└── README.md                           ← このファイル
 ```
 
 ## 🏛️ Azure構成図
