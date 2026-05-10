@@ -18,7 +18,11 @@
 
 - Day 1, 2 完了
 - Azure Container Registry作成済み
-- Web App デプロイ済み
+- **Web App 3環境（Dev/Staging/Production）デプロイ済み**
+  - az400-dev-webapp
+  - az400-staging-webapp
+  - az400-prod-webapp
+  - 各環境でManaged Identity + ACR Pull権限設定済み
 
 ---
 
@@ -72,15 +76,31 @@ az ad sp list --filter "displayName eq 'github-actions-az400'" --query "[].{Name
 
 #### 1.2 GitHub Secrets設定
 
-> **📝 注意**: Day 2で既に `AZURE_CREDENTIALS` を設定済みの場合、この手順は不要です。
+> **📝 注意**: Day 2で既に `AZURE_CREDENTIALS` と `ACR_LOGIN_SERVER` を設定済みの場合、この手順は不要です。
 
 GitHub > Settings > Secrets and variables > Actions に以下を設定:
 
-- `AZURE_CREDENTIALS`: 上記JSON全体（Service Principalの認証情報）
+1. **AZURE_CREDENTIALS**: Service Principalの認証情報（上記JSONファイル全体）
+2. **ACR_LOGIN_SERVER**: Azure Container RegistryのログインサーバーURL
+
+```powershell
+# ACR_LOGIN_SERVER の値を取得
+az acr show --name az400acr --resource-group rg-az400-handson --query loginServer -o tsv
+# 出力例: az400acr.azurecr.io
+```
+
+**GitHub Secretsへの設定手順：**
+
+1. GitHubリポジトリで **Settings** → **Secrets and variables** → **Actions** をクリック
+2. **New repository secret** をクリック
+3. 以下のSecretを追加:
+   - Name: `ACR_LOGIN_SERVER`
+   - Value: `az400acr.azurecr.io` (上記コマンドの出力)
 
 **備考**: 
 - ACRへのログインは `az acr login` を使用するため、ACR個別の認証情報（ACR_USERNAME/PASSWORD）は不要です
 - `AZURE_CREDENTIALS` のみでACR + Web Appの両方にアクセス可能です
+- `ACR_LOGIN_SERVER` はCD Pipelineでコンテナイメージのフルパス指定に使用されます
 
 #### 1.3 CI Pipeline作成
 
@@ -194,6 +214,139 @@ jobs:
 **CD Pipelineの目的**: CI Pipelineが成功後、Dev → Staging → Productionの順に段階的デプロイを実行します。各環境でヘルスチェックと検証を行い、問題があれば次の環境へ進みません。
 
 **具体的な実装手順：**
+
+**手順0: Azure Web App 3環境の作成（未作成の場合）**
+
+> **📝 重要**: CD Pipelineは3環境（Dev/Staging/Production）への段階的デプロイを実行します。Day 2でDev環境のみ作成した場合、StagingとProductionを追加で作成してください。
+
+```powershell
+# 1. 現在のWeb App一覧を確認
+az webapp list --resource-group rg-az400-handson --query "[].{Name:name, State:state}" -o table
+
+# 2. Staging環境を作成（存在しない場合）
+if (-not (az webapp show --name az400-staging-webapp --resource-group rg-az400-handson 2>$null)) {
+    Write-Host "📦 Staging環境を作成中..." -ForegroundColor Cyan
+    
+    # 既存のDev環境のApp Service Planを再利用（追加コストなし）
+    az webapp create `
+      --name az400-staging-webapp `
+      --resource-group rg-az400-handson `
+      --plan az400-dev-asp `
+      --deployment-container-image-name mcr.microsoft.com/appsvc/staticsite:latest
+    
+    # Managed Identityを有効化
+    $stagingPrincipalId = az webapp identity assign `
+      --name az400-staging-webapp `
+      --resource-group rg-az400-handson `
+      --query principalId -o tsv
+    
+    # ACR Pull権限を付与
+    $acrId = az acr show --name az400acr --resource-group rg-az400-handson --query id -o tsv
+    az role assignment create `
+      --assignee $stagingPrincipalId `
+      --role AcrPull `
+      --scope $acrId
+    
+    # ACR Managed Identity認証を有効化
+    az webapp config set `
+      --name az400-staging-webapp `
+      --resource-group rg-az400-handson `
+      --generic-configurations '{"acrUseManagedIdentityCreds": true}'
+    
+    # Application Insights接続文字列を取得（拡張機能インストール確認で"Y"を入力）
+    $appInsightsConnStr = az monitor app-insights component show `
+      --app az400-dev-ai `
+      --resource-group rg-az400-handson `
+      --query connectionString -o tsv
+    
+    # 環境変数を設定
+    az webapp config appsettings set `
+      --name az400-staging-webapp `
+      --resource-group rg-az400-handson `
+      --settings `
+        APPLICATIONINSIGHTS_CONNECTION_STRING="$appInsightsConnStr" `
+        DOCKER_ENABLE_CI=true `
+        WEBSITES_ENABLE_APP_SERVICE_STORAGE=false `
+        PORT=3000
+    
+    Write-Host "✅ Staging環境作成完了" -ForegroundColor Green
+} else {
+    Write-Host "✅ Staging環境は既に存在します" -ForegroundColor Green
+}
+
+# 3. Production環境を作成（存在しない場合）
+if (-not (az webapp show --name az400-prod-webapp --resource-group rg-az400-handson 2>$null)) {
+    Write-Host "📦 Production環境を作成中..." -ForegroundColor Cyan
+    
+    # 既存のDev環境のApp Service Planを再利用（追加コストなし）
+    az webapp create `
+      --name az400-prod-webapp `
+      --resource-group rg-az400-handson `
+      --plan az400-dev-asp `
+      --deployment-container-image-name mcr.microsoft.com/appsvc/staticsite:latest
+    
+    # Managed Identityを有効化
+    $prodPrincipalId = az webapp identity assign `
+      --name az400-prod-webapp `
+      --resource-group rg-az400-handson `
+      --query principalId -o tsv
+    
+    # ACR Pull権限を付与
+    $acrId = az acr show --name az400acr --resource-group rg-az400-handson --query id -o tsv
+    az role assignment create `
+      --assignee $prodPrincipalId `
+      --role AcrPull `
+      --scope $acrId
+    
+    # ACR Managed Identity認証を有効化
+    az webapp config set `
+      --name az400-prod-webapp `
+      --resource-group rg-az400-handson `
+      --generic-configurations '{"acrUseManagedIdentityCreds": true}'
+    
+    # Application Insights接続文字列を取得
+    $appInsightsConnStr = az monitor app-insights component show `
+      --app az400-dev-ai `
+      --resource-group rg-az400-handson `
+      --query connectionString -o tsv
+    
+    # 環境変数を設定
+    az webapp config appsettings set `
+      --name az400-prod-webapp `
+      --resource-group rg-az400-handson `
+      --settings `
+        APPLICATIONINSIGHTS_CONNECTION_STRING="$appInsightsConnStr" `
+        DOCKER_ENABLE_CI=true `
+        WEBSITES_ENABLE_APP_SERVICE_STORAGE=false `
+        PORT=3000
+    
+    Write-Host "✅ Production環境作成完了" -ForegroundColor Green
+} else {
+    Write-Host "✅ Production環境は既に存在します" -ForegroundColor Green
+}
+
+# 4. 全環境の状態を確認
+Write-Host "`n📋 Web App環境一覧:" -ForegroundColor Cyan
+az webapp list --resource-group rg-az400-handson --query "[].{Name:name, State:state}" -o table
+
+Write-Host "`n💡 ポイント:" -ForegroundColor Yellow
+Write-Host "  - 全環境が同一のB1 App Service Plan（az400-dev-asp）を使用" -ForegroundColor White
+Write-Host "  - 追加のWeb Appを作成してもプラン料金は変わりません（コスト最適化）" -ForegroundColor White
+Write-Host "  - 各環境にManaged Identity + ACR Pull権限が設定済み" -ForegroundColor White
+```
+
+**トラブルシューティング：**
+
+- **Q: Application Insights拡張機能インストール確認が表示される**  
+  A: 初回実行時に "The command requires the extension application-insights. Do you want to install it now? (Y/n):" と表示されます。`Y` を入力してインストールしてください。
+
+- **Q: Storage Account名が長すぎるエラーが出る**  
+  A: Bicepで環境を作成する場合、Storage Account名は24文字以下にしてください（例: `az400stagingsa` → `az400stgsa`）。ただし、上記の手順ではWeb Appのみ作成するため、このエラーは発生しません。
+
+- **Q: Free Tier (F1) のクォータエラーが出る**  
+  A: Free Tierは1サブスクリプションあたり1つまでです。上記の手順では既存のB1プランを再利用するため、このエラーは発生しません。
+
+---
 
 **手順1: ワークフローファイルの作成**
 
@@ -477,6 +630,16 @@ start "https://github.com/YOUR_USERNAME/az400-handson-bootcamp/actions"
 ```powershell
 # 実際のリソース名を確認
 az webapp list -g rg-az400-handson --query "[].name" -o table
+```
+
+**Q: "ResourceNotFound: Web App 'az400-staging-webapp' not found" または "az400-prod-webapp not found" エラーが出る**
+- A: CD Pipelineは3環境（Dev/Staging/Production）への段階的デプロイを実行します。**手順0: Azure Web App 3環境の作成**を実施して、全環境を作成してください
+- 確認コマンド:
+```powershell
+# 存在するWeb Appを確認
+az webapp list --resource-group rg-az400-handson --query "[].{Name:name, State:state}" -o table
+
+# 期待される出力: az400-dev-webapp, az400-staging-webapp, az400-prod-webapp の3つ
 ```
 
 **Q: "Application Error" が表示される**
@@ -1152,18 +1315,806 @@ git push origin feature/AB#20-new-feature
 # - Azure Boards で AB#20 が Closed になっていることを確認
 ```
 
-#### 5.2 動作確認
+#### 5.2 Application Insightsでの監視（KQLクエリ実践）
+
+デプロイ後、Application InsightsでKQLクエリを実行し、アプリケーションの動作を確認します。
+
+##### 5.2.1 Application Insightsへのアクセス
+
+1. **Azure Portal**にアクセス: https://portal.azure.com
+2. リソースグループ `rg-az400-handson` を開く
+3. **Application Insights** リソース（`az400-dev-ai`）をクリック
+4. 左メニューから **Logs** を選択
+
+##### 5.2.2 基本的なリクエスト確認
+
+**クエリ1: 過去1時間のリクエスト一覧**
+
+```kql
+requests
+| where timestamp > ago(1h)
+| project timestamp, name, url, resultCode, duration, success
+| order by timestamp desc
+| take 50
+```
+
+**説明:**
+- `ago(1h)`: 1時間前から現在まで
+- `project`: 表示するカラムを選択
+- `take 50`: 最新50件を表示
+
+**期待される結果:**
+```
+timestamp              name    url                                    resultCode  duration  success
+2026-05-10 10:30:15   GET /   https://az400-dev-webapp...           200         45.2      true
+2026-05-10 10:29:45   GET /health  https://az400-dev-webapp...      200         12.5      true
+```
+
+**このクエリの活用方法:**
+
+1. **保存方法**:
+   - Save → **Save as query**
+   - Description: 「過去1時間のリクエスト一覧（全HTTPステータスコード）」
+   - Label: 「Daily-Check」
+
+2. **アラート設定**: 不要（調査・確認用クエリ）
+
+3. **ダッシュボード追加**:
+   - Save → **Pin to Azure dashboard**
+   - 「Pin to dashboard」ダイアログが表示されます
+
+**設定項目:**
+
+| 項目 | 選択肢 | 推奨設定 |
+|------|--------|----------|
+| **タブ** | Existing / Create new | 既存ダッシュボードがあれば **Existing**、初回は **Create new** |
+| **Type** | Private / Shared | **Private**（個人用）または **Shared**（チーム共有用） |
+| **Dashboard** | ドロップダウン | 既存ダッシュボードを選択 |
+
+**具体的な手順:**
+
+- **初回作成時**:
+  1. **Create new** タブを選択
+  2. Type: **Private** を選択（個人用）
+  3. ダッシュボード名を入力: 「AZ400-Application-Insights-Dashboard」
+  4. タイル名を入力: 「最新リクエスト一覧（過去1時間）」
+  5. 「**Pin**」をクリック
+
+- **2回目以降**:
+  1. **Existing** タブを選択
+  2. Type: **Private** のまま（または **Shared** でチーム共有）
+  3. Dashboard: 「AZ400-Application-Insights-Dashboard」を選択
+  4. タイル名を入力: クエリに応じた名前
+  5. 「**Pin**」をクリック
+
+> **📝 重要**: ダッシュボードにタイルを追加した後、**Configure tile settings**ダイアログが表示されます。ここで個別に以下を設定できます：
+> - **Edit title セクション**:
+>   - **Title**: タイルのタイトル（わかりやすい名前に変更推奨）
+>   - **Subtitle**: サブタイトル（オプション、クエリの説明など）
+> - **Time settings セクション**:
+>   - **Override the dashboard time settings at the tile level**: チェックボックス（ダッシュボード全体と異なる時間範囲を設定可能）
+>   - **Timespan**: 時間範囲（例: Past 24 hours）
+>   - **Time granularity**: 時間粒度（例: Automatic）
+>   - **Show time as**: タイムゾーン（例: UTC）
+> 
+> タイトル設定後、「**Apply**」をクリックして確定してください。
+
+**用途**: 日常監視、トラブルシューティング時の即座確認
+
+**AZ-400試験のポイント:**
+- ✅ **Private vs Shared**: 個人用はPrivate、チーム全体で共有する場合はShared
+- ✅ **ダッシュボード統合**: 複数のクエリを1つのダッシュボードにまとめて管理
+- ✅ **Configure tile settings**: タイル追加後、個別にタイトルや時間設定をカスタマイズ可能
+
+---
+
+**クエリ2: 1時間ごとのリクエスト数（時系列グラフ）**
+
+```kql
+requests
+| where timestamp > ago(24h)
+| summarize RequestCount = count() by bin(timestamp, 1h)
+| render timechart
+```
+
+**説明:**
+- `bin(timestamp, 1h)`: タイムスタンプを1時間単位でグループ化
+- `render timechart`: 時系列グラフで表示（AZ-400頻出）
+
+**このクエリの活用方法:**
+
+1. **保存方法**:
+   - Save → **Save as query**
+   - Description: 「リクエスト数の時系列推移（過去24時間）」
+   - Label: 「Monitoring」
+
+2. **アラート設定**（推奨）:
+   - クエリを以下に変更してアラート作成:
+   ```kql
+   requests
+   | where timestamp > ago(1h)
+   | summarize RequestCount = count()
+   | where RequestCount < 10
+   ```
+   - **New alert rule**をクリック → **Condition**タブで設定:
+   
+   **Create an alert rule - Condition設定:**
+   
+   | 項目 | 設定値 | 説明 |
+   |------|--------|------|
+   | **Signal name** | Custom log search | ドロップダウンから選択 |
+   | **Query type** | ● Aggregated logs | ラジオボタンで選択（集計データでアラート） |
+   | | ○ Single event (preview) | 選択しない（特定メッセージでのアラート用） |
+   | **Search query** | 上記KQLクエリを入力 | 緑のチェックマークが表示されればOK |
+   | **Threshold value** | `10` | 1時間あたりのリクエストが10未満でアラート |
+   | **Evaluation frequency** | `5 minutes` | 5分ごとに評価 |
+   
+   - **Next: Actions >**をクリック → **Actions**タブで通知設定:
+   
+   **Create an alert rule - Actions設定:**
+   
+   Actionsタブには2つのオプションがあります:
+   
+   **オプション1: 既存のアクショングループを選択**
+   
+   | 手順 | 操作 | 説明 |
+   |------|------|------|
+   | 1 | **Select action groups** ボタンをクリック | 既存のアクショングループを選択するダイアログが開く |
+   | 2 | **Subscription** ドロップダウンで選択 | アクショングループが作成されているサブスクリプション |
+   | 3 | リストから選択 | チェックボックスで既存のアクショングループを選択<br>例: 「Application Insights Smart Detection」<br>Contains actions: 2 Email Azure Resource Management |
+   | 4 | **Select** ボタンをクリック | 選択したアクショングループをアラートルールに適用 |
+   
+   **オプション2: 新しいアクショングループを作成**
+   
+   | 手順 | 操作 | 説明 |
+   |------|------|------|
+   | 1 | **Create action group** ボタンをクリック | 新規アクショングループ作成ダイアログが開く |
+   | 2 | **Basics** タブで基本情報を入力 | |
+   | | **Subscription** | アラートと同じサブスクリプション |
+   | | **Resource group** | `rg-az400-handson` を選択 |
+   | | **Action group name** | 例: `ag-az400-alerts` |
+   | | **Display name** | 例: `AZ400 Alerts`（12文字以内） |
+   | 3 | **Notifications** タブで通知方法を設定 | |
+   | | **Notification type** | Email/SMS message/Push/Voice を選択 |
+   | | **Email** | 開発チームのメールアドレス（例: team@example.com） |
+   | | **SMS** | オンコール担当者の電話番号（オプション） |
+   | | **Name** | 例: `Email-DevTeam` |
+   | 4 | **Actions** タブ（オプション） | 自動アクションを設定 |
+   | | **Automation Runbook** | 自動復旧スクリプト（サービス再起動など） |
+   | | **Azure Function** | カスタム処理（Slack通知、チケット作成など） |
+   | | **Logic App** | ワークフロー実行（複雑なエスカレーション） |
+   | | **Webhook** | 外部システム連携（PagerDuty、Slackなど） |
+   | 5 | **Review + create** → **Create** | アクショングループ作成完了 |
+   
+   **Email subject（オプション設定）:**
+   
+   Actionsタブの下部に「Email subject」フィールドがあり、メール通知の件名をカスタマイズできます。
+   - デフォルト: Azure Monitor alert for [リソース名]
+   - カスタマイズ例: 「【緊急】リクエスト数異常低下 - AZ400」
+   
+   - **Next: Details >**をクリック → **Details**タブでアラート名を入力:
+     - **Alert rule name**: 「リクエスト数異常低下アラート」
+     - **Description**: 「1時間あたりのリクエスト数が10未満の場合に通知」
+     - **Severity**: `2 - Warning` または `1 - Error`（重要度に応じて選択）
+   
+   - **Review + create**をクリック → アラートルール作成完了
+   
+   - 用途: サービス停止や障害の早期検知
+   
+   **AZ-400試験のポイント:**
+   - ✅ **Aggregated logs vs Single event**: 集計データのアラートには「Aggregated logs」を選択
+   - ✅ **クエリ検証**: 緑のチェックマークでクエリの正当性を確認
+   - ✅ **Action Group**: 複数のアラートで同じアクショングループを再利用可能
+   - ✅ **Email vs SMS**: Email=一般通知、SMS=緊急通知（オンコール用）
+   - ✅ **Severity レベル**: 0=Critical、1=Error、2=Warning、3=Informational、4=Verbose
+
+3. **ダッシュボード追加**（強く推奨）:
+   - Save → **Pin to Azure dashboard**
+   - 「Pin to dashboard」ダイアログが表示されます
+
+**設定項目:**
+
+- **タブ**: **Existing** を選択（初回作成済みのダッシュボードを使用）
+- **Type**: **Shared** を推奨（経営層・チーム全体で閲覧）
+- **Dashboard**: 「AZ400-Application-Insights-Dashboard」を選択
+- **タイル名**: 「リクエスト数推移（過去24時間）」
+- 「**Pin**」をクリック
+
+**用途**: トラフィック傾向の可視化、経営層向けレポート
+
+**AZ-400試験のポイント:**
+- ✅ **Shared dashboard**: 経営層向けメトリクスはチーム全体で共有
+- ✅ **時系列グラフ**: トレンド分析に最適、異常値の早期発見
+
+---
+
+**クエリ3: エンドポイント別リクエスト数**
+
+```kql
+requests
+| where timestamp > ago(24h)
+| summarize RequestCount = count() by name
+| order by RequestCount desc
+```
+
+**期待される結果:**
+```
+name           RequestCount
+GET /          1250
+GET /health    48
+GET /secret    15
+```
+
+**このクエリの活用方法:**
+
+1. **保存方法**:
+   - Save → **Save as query**
+   - Description: 「エンドポイント別リクエスト数（過去24時間）」
+   - Label: 「API-Monitoring」
+
+2. **アラート設定**（オプション）:
+   - 特定エンドポイントへのアクセスが異常に多い場合のアラート:
+   ```kql
+   requests
+   | where timestamp > ago(1h)
+   | where name == "GET /secret"
+   | summarize RequestCount = count()
+   | where RequestCount > 100
+   ```
+   - **New alert rule**をクリック → **Condition**タブで設定:
+   
+   **Create an alert rule - Condition設定（エンドポイント監視）:**
+   
+   | 項目 | 設定値 | 説明 |
+   |------|--------|------|
+   | **Signal name** | Custom log search | ドロップダウンから選択 |
+   | **Query type** | ● Aggregated logs | ラジオボタンで選択 |
+   | **Search query** | 上記KQLクエリを入力 | 特定エンドポイント（/secret）の監視 |
+   
+   **Measurement セクション:**
+   
+   | 項目 | 設定値 | 説明 |
+   |------|--------|------|
+   | **Measure** | Table rows | ドロップダウンで選択（クエリ結果の行数をカウント） |
+   | **Aggregation type** | Count | ドロップダウンで選択（件数集計） |
+   | **Aggregation granularity** | 5 minutes | ドロップダウンで選択（5分ごとに集計） |
+   
+   **Split by dimensions セクション（オプション）:**
+   
+   | 項目 | 設定値 | 説明 |
+   |------|--------|------|
+   | **Dimension name** | Select dimension | 通常は選択不要（すべてのリクエストを集計） |
+   | **Operator** | = | ディメンション選択時の演算子 |
+   | **Dimension values** | 0 selected | 特定の値でフィルタ（通常は不要） |
+   | **Include all future values** | ☐ | 新しいディメンション値を自動的に含める |
+   
+   > **📝 Note**: Split by dimensionsは、エンドポイントごと、リージョンごとなどに個別アラートを作成したい場合に使用します。今回はKQLクエリで既に `/secret` エンドポイントに絞り込んでいるため、ディメンション設定は不要です。
+   
+   **Alert logic セクション:**
+   
+   | 項目 | 設定値 | 説明 |
+   |------|--------|------|
+   | **Threshold value** | `100` | 1時間あたりのリクエストが100を超えたらアラート |
+   | **Operator** | Greater than | 閾値より大きい場合に発火 |
+   | **Evaluation frequency** | `5 minutes` | 5分ごとに評価 |
+   
+   - **Next: Actions >** → アクショングループを選択（セキュリティチーム向け通知）
+   - **Next: Details >** → アラート名: 「機密エンドポイント異常アクセス検知」
+   - **Severity**: `1 - Error`（セキュリティアラートは高優先度）
+   
+   - 用途: セキュリティ監視（機密エンドポイントへの異常アクセス検知）
+   
+   **AZ-400試験のポイント:**
+   - ✅ **Split by dimensions**: 複数ディメンションで個別アラートを作成可能（リージョン別、環境別など）
+   - ✅ **Measure = Table rows**: クエリ結果の行数をカウント（count()の結果ではなく結果セットの行数）
+   - ✅ **セキュリティアラート**: Severity 1（Error）または 0（Critical）で設定
+
+3. **ダッシュボード追加**（推奨）:
+   - Save → **Pin to Azure dashboard**
+   - 「Pin to dashboard」ダイアログが表示されます
+
+**設定項目:**
+
+- **タブ**: **Existing** を選択
+- **Type**: **Private** または **Shared**（開発チーム用はShared推奨）
+- **Dashboard**: 「AZ400-Application-Insights-Dashboard」を選択
+- **タイル名**: 「エンドポイント別アクセス数」
+- 「**Pin**」をクリック
+
+**用途**: API使用状況の把握、人気エンドポイントの特定
+
+---
+
+##### 5.2.3 エラー率確認
+
+**クエリ4: エラー率の計算**
+
+```kql
+requests
+| where timestamp > ago(1h)
+| extend isError = toint(success == false)
+| summarize 
+    TotalRequests = count(),
+    ErrorCount = sum(isError),
+    ErrorRate = 100.0 * sum(isError) / count()
+| project TotalRequests, ErrorCount, ErrorRate
+```
+
+**説明:**
+- `extend isError`: エラーかどうかを判定（0または1）
+- `ErrorRate`: エラー率をパーセンテージで計算
+
+**期待される結果（正常時）:**
+```
+TotalRequests  ErrorCount  ErrorRate
+1200           0           0.0
+```
+
+**期待される結果（エラー発生時）:**
+```
+TotalRequests  ErrorCount  ErrorRate
+1200           24          2.0
+```
+
+**このクエリの活用方法:**
+
+1. **保存方法**:
+   - Save → **Save as query**
+   - Description: 「エラー率計算（過去1時間、5%超過でアラート用）」
+   - Label: 「Critical」
+
+2. **アラート設定**（必須・最重要）:
+   - New alert rule → 条件:
+     - **Threshold value**: `5` （エラー率5%を超えたら）
+     - **Operator**: `Greater than`
+     - **Aggregation granularity**: `5 minutes`
+     - **Frequency of evaluation**: `5 minutes`
+   - アクショングループ:
+     - Email通知: 開発チーム全員
+     - SMS通知: オンコール担当者
+   - アラート名: 「エラー率5%超過（緊急対応必要）」
+   - 用途: **本番環境の品質監視・SLA違反の早期検知**
+
+3. **ダッシュボード追加**（必須）:
+   - Save → **Pin to Azure dashboard**
+   - 「Pin to dashboard」ダイアログが表示されます
+
+**設定項目（重要）:**
+
+- **タブ**: **Existing** を選択
+- **Type**: **Shared** を強く推奨（全員が確認すべきメトリクス）
+- **Dashboard**: 「AZ400-Application-Insights-Dashboard」を選択
+- **タイル名**: 「エラー率（リアルタイム）」
+- 「**Pin**」をクリック
+
+**配置推奨**: ダッシュボードの最上部・左上（最重要メトリクス）
+
+**用途**: 経営層向けダッシュボード、品質メトリクス、SLA監視
+
+**AZ-400試験のポイント:**
+- ✅ **エラー率は必須共有**: Shared dashboardで全員が常時監視
+- ✅ **ダッシュボード配置**: 重要度の高いメトリクスは上部に配置
+
+**AZ-400試験のポイント:**
+- ✅ **エラー率5%**: SLA基準として頻出（95%成功率 = 5%エラー率）
+- ✅ **5分間隔**: リアルタイム性と負荷のバランス
+- ✅ **Critical アラート**: 即座にエスカレーション
+
+---
+
+**クエリ5: エラーの詳細確認**
+
+```kql
+requests
+| where timestamp > ago(24h)
+| where success == false
+| project timestamp, name, url, resultCode, duration
+| order by timestamp desc
+```
+
+**説明:**
+- `success == false`: 失敗したリクエストのみフィルタ
+
+**このクエリの活用方法:**
+
+1. **保存方法**:
+   - Save → **Save as query**
+   - Description: 「エラー詳細一覧（トラブルシューティング用）」
+   - Label: 「Troubleshooting」
+
+2. **アラート設定**: 不要（調査用クエリ。クエリ4でエラー率アラート済み）
+
+3. **ダッシュボード追加**: オプション（通常は不要）
+   - エラー率（クエリ4）で異常検知した後、このクエリで詳細調査
+   - 用途: エラー発生時の詳細調査に使用
+   - 通常は保存クエリとして必要時に実行
+
+**ピン留めする場合の設定:**
+- **タブ**: Existing
+- **Type**: Private（調査用、個人的に使用）
+- **Dashboard**: 個別の調査用ダッシュボードを作成推奨
+- **タイル名**: 「エラー詳細（トラブルシューティング用）」
+
+---
+
+##### 5.2.4 パフォーマンス分析（AZ-400重要）
+
+**クエリ6: パーセンタイルでレスポンスタイム分析**
+
+```kql
+requests
+| where timestamp > ago(1h)
+| summarize 
+    p50 = percentile(duration, 50),
+    p95 = percentile(duration, 95),
+    p99 = percentile(duration, 99),
+    avg_duration = avg(duration)
+| project 
+    Median_ms = p50,
+    P95_ms = p95,
+    P99_ms = p99,
+    Average_ms = avg_duration
+```
+
+**説明:**
+- `percentile(duration, 95)`: 95%のリクエストがこの時間以内に完了
+- **AZ-400頻出**: P95、P99の意味を理解する
+
+**期待される結果:**
+```
+Median_ms  P95_ms  P99_ms  Average_ms
+25.3       78.5    125.8   32.1
+```
+
+**解釈:**
+- 中央値: 25.3ms（半分のリクエストが25.3ms以内）
+- P95: 78.5ms（95%のリクエストが78.5ms以内）
+- P99: 125.8ms（99%のリクエストが125.8ms以内）
+
+**このクエリの活用方法:**
+
+1. **保存方法**:
+   - Save → **Save as query**
+   - Description: 「レスポンスタイムP95パーセンタイル（SLA監視用）」
+   - Label: 「Performance」
+
+2. **アラート設定**（推奨・重要）:
+   - P95が目標値を超えた場合のアラート:
+   ```kql
+   requests
+   | where timestamp > ago(5m)
+   | summarize P95 = percentile(duration, 95)
+   | where P95 > 100
+   ```
+   - New alert rule → 条件:
+     - **Threshold value**: `100` （P95が100ms超過）
+     - **Aggregation granularity**: `5 minutes`
+     - **Frequency of evaluation**: `5 minutes`
+   - アラート名: 「レスポンスタイムP95が100ms超過（SLA警告）」
+   - 用途: **パフォーマンスSLA監視（例: P95 < 100msを保証）**
+
+3. **ダッシュボード追加**（強く推奨）:
+   - Save → **Pin to Azure dashboard**
+   - 「Pin to dashboard」ダイアログが表示されます
+
+**設定項目（重要）:**
+
+- **タブ**: **Existing** を選択
+- **Type**: **Shared** を推奨（パフォーマンス監視はチーム全体で共有）
+- **Dashboard**: 「AZ400-Application-Insights-Dashboard」を選択
+- **タイル名**: 「レスポンスタイムパーセンタイル（P50/P95/P99）」
+- 「**Pin**」をクリック
+
+**配置推奨**: エラー率の右隣（主要メトリクスとして上部配置）
+
+**用途**: パフォーマンストレンド監視、容量計画、SLA遵守確認
+
+**AZ-400試験のポイント:**
+- ✅ **P95はSLAの標準**: 「95%のリクエストが100ms以内」などの定義に使用
+- ✅ **経営層向け**: パフォーマンスメトリクスは経営判断に重要
+
+**AZ-400試験のポイント:**
+- ✅ **P95パーセンタイル**: SLA定義に頻出（「95%のリクエストが100ms以内」など）
+- ✅ **中央値 vs P95**: 中央値は外れ値の影響を受けにくいが、SLAにはP95/P99を使用
+- ✅ **5分間隔監視**: リアルタイム性とコストのバランス
+
+---
+
+**クエリ7: 遅いリクエストの特定（1秒以上）**
+
+```kql
+requests
+| where timestamp > ago(1h)
+| where duration > 1000
+| project timestamp, name, url, duration
+| order by duration desc
+```
+
+**説明:**
+- `duration > 1000`: 1000ミリ秒（1秒）以上のリクエスト
+
+**このクエリの活用方法:**
+
+1. **保存方法**:
+   - Save → **Save as query**
+   - Description: 「遅いリクエスト一覧（1秒以上、パフォーマンス調査用）」
+   - Label: 「Troubleshooting」
+
+2. **アラート設定**: 不要（調査用クエリ。クエリ6でP95アラート済み）
+
+3. **ダッシュボード追加**: オプション（通常は不要）
+   - パーセンタイル分析（クエリ6）で異常検知した後、このクエリで原因調査
+   - 用途: パフォーマンス問題発生時の詳細調査
+   - 通常は保存クエリとして必要時に実行
+
+**ピン留めする場合の設定:**
+- **タブ**: Existing
+- **Type**: Private（調査用、個人的に使用）
+- **Dashboard**: 個別の調査用ダッシュボードを作成推奨
+- **タイル名**: 「遅いリクエスト（1秒以上）」
+
+---
+
+##### 5.2.5 環境別確認（オプション）
+
+Web AppのcustomDimensionsにクラウドロール名が記録されています：
+
+```kql
+requests
+| where timestamp > ago(1h)
+| extend environment = tostring(customDimensions["ai.cloud.role"])
+| summarize RequestCount = count() by environment
+| order by RequestCount desc
+```
+
+**期待される結果:**
+```
+environment               RequestCount
+az400-prod-webapp         500
+az400-staging-webapp      200
+az400-dev-webapp          100
+```
+
+**このクエリの活用方法:**
+
+1. **保存方法**:
+   - Save → **Save as query**
+   - Description: 「環境別リクエスト数（Dev/Staging/Prod）」
+   - Label: 「Environment-Monitoring」
+
+2. **アラート設定**（推奨）:
+   - 本番環境のリクエスト数が異常に少ない場合:
+   ```kql
+   requests
+   | where timestamp > ago(1h)
+   | extend environment = tostring(customDimensions["ai.cloud.role"])
+   | where environment == "az400-prod-webapp"
+   | summarize RequestCount = count()
+   | where RequestCount < 50
+   ```
+   - アラート名: 「Production環境リクエスト異常低下」
+   - 用途: 本番環境のトラフィック監視、障害検知
+
+3. **ダッシュボード追加**（推奨）:
+   - Save → **Pin to Azure dashboard**
+   - 「Pin to dashboard」ダイアログが表示されます
+
+**設定項目:**
+
+- **タブ**: **Existing** を選択
+- **Type**: **Shared** を推奨（環境別監視はチーム全体で共有）
+- **Dashboard**: 「AZ400-Application-Insights-Dashboard」を選択
+- **タイル名**: 「環境別トラフィック分散（Dev/Staging/Prod）」
+- 「**Pin**」をクリック
+
+**配置推奨**: ダッシュボードの下部セクション（環境監視エリア）
+
+**用途**: 環境ごとの負荷分散状況、テスト環境の使用率監視、本番環境の優先監視
+
+**AZ-400試験のポイント:**
+- ✅ **環境別監視**: Dev/Staging/Prodの分離監視は本番運用の基本
+- ✅ **Production優先**: 本番環境のトラフィックが他環境より多いことを確認
+
+**AZ-400試験のポイント:**
+- ✅ **環境別監視**: Dev/Staging/Prodの分離監視は本番運用の基本
+- ✅ **customDimensions**: Application Insightsのカスタムプロパティ活用
+- ✅ **Production優先**: 本番環境のみ厳格なアラート設定
+
+---
+
+##### 5.2.6 実践Tips（AZ-400試験対策）
+
+**よく使うKQL関数:**
+
+| 関数 | 用途 | 例 |
+|-----|------|-----|
+| `bin()` | 時間集計 | `bin(timestamp, 1h)` |
+| `extend` | カラム追加 | `extend isError = success == false` |
+| `project` | カラム選択 | `project timestamp, name` |
+| `percentile()` | パーセンタイル計算 | `percentile(duration, 95)` |
+| `summarize` | 集計 | `summarize count() by name` |
+| `where` | フィルタ | `where success == false` |
+| `ago()` | 相対時間 | `ago(1h)`, `ago(24h)` |
+
+**AZ-400試験でよく問われるポイント:**
+- ✅ **Cycle Time vs Lead Time**: Cycleは作業開始→完了、Leadは作成→完了
+- ✅ **P95パーセンタイル**: 95%のリクエストがこの時間以内
+- ✅ **bin()関数**: 時間集計に必須（1h、5m、1dなど）
+- ✅ **extend vs project**: extendはカラム追加、projectはカラム選択
+
+##### 5.2.7 保存とアラート設定（発展）
+
+1. **クエリの保存**:
+   - クエリを実行後、上部の「**Save**」ボタンをクリック
+   - ドロップダウンメニューが表示されるので、「**Save as query**」を選択
+   - 「Save as query」ダイアログが表示されます
+
+**設定項目の詳細:**
+
+| フィールド | 設定内容 | 推奨値 |
+|-----------|---------|--------|
+| **Type query description** | クエリの説明文を入力 | 「過去1時間のリクエスト一覧を表示」など、クエリの目的を簡潔に記述 |
+| **Save as Legacy query** | レガシー形式で保存（チェックボックス） | ☐ チェックしない（新形式を推奨） |
+| **Path** | 保存先の選択 | ☑ **Save to the default query pack**（推奨） |
+| **Tags - Resource type** | リソースタイプ | **Application Insights**（自動選択済み） |
+| **Tags - Category** | カテゴリ分類（オプション） | ドロップダウンから既存のカテゴリを選択（新規作成不可） |
+| **Tags - Label** | ラベル（オプション） | ドロップダウンから選択、または「**Create new label**」で新規作成可 |
+
+**具体的な入力例:**
+
+```
+【必須項目】
+Type query description:
+  「過去1時間のリクエスト一覧（全HTTPステータスコード）」
+
+Path:
+  ☑ Save to the default query pack
+
+【オプション項目】
+Tags - Category:
+  既存のカテゴリから選択（0 selected = 未選択でもOK）
+
+Tags - Label:
+  既存のラベルから選択、または「Create new label」をクリックして新規作成
+  例: 「Daily-Check」「Production」など
+```
+
+**保存完了:**
+   - 「**Save**」ボタンをクリック
+   - 保存したクエリは「**Logs → Queries → My queries**」から再利用可能
+
+**AZ-400試験のポイント:**
+- ✅ **Type query description**: 検索時に見つけやすい説明を記述
+- ✅ **default query pack**: チーム間でクエリを共有可能
+- ✅ **Tags**: 大量のクエリを分類・整理するために重要
+
+---
+
+**Saveメニューの選択肢の説明:**
+
+| 選択肢 | 用途 | いつ使う？ |
+|-------|------|-----------|
+| **Save as query** | クエリを保存して再利用 | よく使うKQLクエリを保存（推奨） |
+| **Save as function** | KQL関数として保存 | 複雑なロジックを関数化して他のクエリで再利用 |
+| **Pin to Azure dashboard** | Azure Portalダッシュボードに追加 | 常時監視したいメトリクス |
+| **Pin to Grafana dashboard** | Grafanaダッシュボードに追加 | Grafana使用時のみ |
+| **Send to workbook** | Azure Workbookに送信 | 複数クエリを組み合わせたレポート作成 |
+
+**AZ-400試験のポイント:**
+- ✅ **Save as query**: 最も一般的、クエリの再利用に最適
+- ✅ **Pin to dashboard**: リアルタイム監視用、経営層向けダッシュボード
+- ✅ **Workbook**: 複数のクエリ・グラフを組み合わせた総合レポート
+
+2. **アラートルールの作成**:
+   - 保存したクエリを開く（Logs → Queries → My queries → 保存したクエリ名）
+   - クエリを実行後、上部の「**New alert rule**」をクリック
+   - 条件設定:
+     - **Threshold value**: `5` （エラー率5%を超えたら）
+     - **Evaluation frequency**: `5 minutes` （5分ごとに評価）
+   - アクショングループ: 
+     - 新規作成またはリソースグループから既存を選択
+     - 通知方法: Email/SMS/Push/Voice
+     - Email: 通知先アドレスを入力
+   - アラートルール名を入力（例: "エラー率5%超過アラート"）
+   - 「**Create alert rule**」をクリック
+
+3. **ダッシュボードへのピン留め**:
+   - クエリを実行後、上部の「**Save**」→「**Pin to Azure dashboard**」を選択
+   - ダッシュボード選択:
+     - **Create new**: 新規ダッシュボード作成
+     - **Existing**: 既存ダッシュボードに追加
+   - タイル名を入力（例: "リクエスト数（過去24時間）"）
+   - 「**Pin**」をクリック
+   - Azure Portalのホーム画面でダッシュボードを確認可能
+
+---
+
+#### 5.3 動作確認（curlコマンド）
+
+デプロイが完了したら、curlコマンドまたはブラウザで各環境の動作を確認します。
+
+##### 5.3.1 Dev環境の動作確認
 
 ```bash
-# Web Appアクセス
+# 1. ルートエンドポイント
 curl https://az400-dev-webapp.azurewebsites.net/
 
-# ヘルスチェック
+# 期待される結果:
+# {"message":"Hello from AZ-400 Handson!","version":"1.0.0","environment":"development"}
+
+# 2. ヘルスチェック
 curl https://az400-dev-webapp.azurewebsites.net/health
 
-# Key Vaultテスト
+# 期待される結果:
+# {"status":"healthy","timestamp":"2026-05-10T10:30:15.123Z"}
+
+# 3. Key Vaultシークレット取得テスト
 curl https://az400-dev-webapp.azurewebsites.net/secret
+
+# 期待される結果:
+# {"secretName":"demo-secret","value":"********","source":"Azure Key Vault"}
 ```
+
+##### 5.3.2 Staging環境の動作確認
+
+```bash
+# Staging環境も同様にテスト
+curl https://az400-staging-webapp.azurewebsites.net/
+curl https://az400-staging-webapp.azurewebsites.net/health
+```
+
+##### 5.3.3 Production環境の動作確認
+
+```bash
+# Production環境の確認（本番環境）
+curl https://az400-prod-webapp.azurewebsites.net/
+curl https://az400-prod-webapp.azurewebsites.net/health
+```
+
+##### 5.3.4 ブラウザでの確認
+
+各URLをブラウザで開いても確認できます：
+- Dev: https://az400-dev-webapp.azurewebsites.net/
+- Staging: https://az400-staging-webapp.azurewebsites.net/
+- Production: https://az400-prod-webapp.azurewebsites.net/
+
+---
+
+#### 5.4 Work Item自動クローズ確認
+
+GitHub PullRequestをマージする際、コミットメッセージに `AB#20` を含めることで、Azure BoardsのWork Itemが自動的にクローズされます。
+
+##### 5.4.1 確認手順
+
+1. **Azure Boards**を開く:
+   ```
+   https://dev.azure.com/{your-org}/az400-handson/_workitems
+   ```
+
+2. Work Item `AB#20`（または該当するID）を検索
+
+3. **State**が `Closed` または `Done` になっていることを確認
+
+4. **History**タブで、GitHubからの自動更新を確認:
+   ```
+   "Fixed by commit: abc123... (feat: 新機能追加（AB#20）)"
+   ```
+
+##### 5.4.2 AB#記法のバリエーション（AZ-400重要）
+
+以下のキーワードでWork Itemを自動クローズできます：
+
+| キーワード | 例 | 効果 |
+|-----------|-----|------|
+| `fixes AB#123` | `git commit -m "fixes AB#123: バグ修正"` | Work Item #123をクローズ |
+| `resolves AB#123` | `git commit -m "resolves AB#123: 対応完了"` | Work Item #123をクローズ |
+| `closes AB#123` | `git commit -m "closes AB#123: タスク完了"` | Work Item #123をクローズ |
+| `AB#123` | `git commit -m "feat: 新機能（AB#123）"` | リンクのみ（クローズしない） |
+
+**AZ-400試験のポイント:**
+- ✅ `fixes`、`resolves`、`closes`は自動クローズのトリガー
+- ✅ `AB#123`のみの記載はリンクのみ（クローズしない）
+- ✅ マージされたPRのコミットメッセージが対象
 
 ---
 

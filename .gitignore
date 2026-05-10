@@ -27,13 +27,21 @@ yarn-error.log*
 
 # Logs
 logs/
+logs-latest/
 *.log
 webapp-logs/
+webapp-diagnosis-*.log
 
 # バックアップファイル
 *.bak
 *.backup
 *.zip
+app-logs.zip
+
+# 一時ファイル・個人メモ
+tips/
+docs/*-progress.md
+docs/*-test.md
 
 # OS
 .DS_Store
