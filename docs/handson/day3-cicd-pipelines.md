@@ -1134,7 +1134,7 @@ Azure Pipelinesを試験的に使用する場合（Day 3ステップ3）、Azure
 
 ```bash
 # 1. Work Item作成
-# Azure Boards で User Story #20: 新機能追加 を作成
+# Azure Boards で User Story #523: 完全なDevOpsワークフロー実行 を作成
 
 # 2. ブランチ作成
 git checkout main

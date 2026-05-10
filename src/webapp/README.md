@@ -65,3 +65,4 @@ docker run -p 3000:3000 \
 ## Deployment
 
 See [Day 2](../../docs/handson/day2-azure-security.md) and [Day 3](../../docs/handson/day3-cicd-pipelines.md) for deployment instructions.
+New Feature
