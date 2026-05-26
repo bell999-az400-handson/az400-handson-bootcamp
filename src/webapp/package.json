@@ -39,6 +39,7 @@
   "overrides": {
     "brace-expansion": "^5.0.6",
     "picomatch": "^4.0.4",
-    "ip-address": "^10.0.1"
+    "ip-address": "^10.0.1",
+    "qs": "^6.15.2"
   }
 }
