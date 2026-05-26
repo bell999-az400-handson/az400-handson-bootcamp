@@ -78,7 +78,7 @@ jobs:
           docker push az400acr.azurecr.io/az400webapp:latest
       
       - name: Image scan (Trivy)
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: az400acr.azurecr.io/az400webapp:${{ github.sha }}
           format: 'sarif'
