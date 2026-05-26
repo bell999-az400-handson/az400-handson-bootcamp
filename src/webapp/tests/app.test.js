@@ -32,7 +32,10 @@ describe('AZ-400 Web App Tests', () => {
       expect(res.statusCode).toBe(200);
       expect(res.body).toHaveProperty('name', 'AZ-400 Handson Web App');
       expect(res.body).toHaveProperty('version', '1.0.0');
-      expect(res.body).toHaveProperty('nodeVersion');
+      expect(res.body).toHaveProperty('environment');
+      expect(res.body).not.toHaveProperty('nodeVersion');
+      expect(res.body).not.toHaveProperty('platform');
+      expect(res.body).not.toHaveProperty('memory');
     });
   });
 

@@ -21,7 +21,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     tenantId: tenantId
     enableRbacAuthorization: true   // ✅ Azure RBAC使用（Microsoft推奨）
     enableSoftDelete: true
-    softDeleteRetentionInDays: 7
+    softDeleteRetentionInDays: 30
     // enablePurgeProtection は削除（一度有効化すると無効化不可のため）
     
     // データプレーン権限は Access Policies ではなく Azure RBAC で管理
@@ -55,20 +55,6 @@ resource keyVaultSecretsRoleAssignment 'Microsoft.Authorization/roleAssignments@
   scope: keyVault
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRole)
-    principalId: managedIdentityObjectId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// 管理プレーン権限: Key Vault Administrator
-// Key Vault自体の管理権限（RBAC設定、診断設定等）
-var keyVaultAdministratorRole = '00482a5a-887f-4fb3-b363-3b7fe8e74483'
-
-resource keyVaultAdminRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, managedIdentityObjectId, keyVaultAdministratorRole)
-  scope: keyVault
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultAdministratorRole)
     principalId: managedIdentityObjectId
     principalType: 'ServicePrincipal'
   }

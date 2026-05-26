@@ -1,4 +1,5 @@
 const express = require('express');
+const helmet = require('helmet');
 const appInsights = require('applicationinsights');
 const { DefaultAzureCredential } = require('@azure/identity');
 const { SecretClient } = require('@azure/keyvault-secrets');
@@ -23,6 +24,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Middleware
+app.use(helmet());
 app.use(express.json());
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
@@ -98,9 +100,8 @@ app.get('/secret', async (req, res) => {
     res.json({
       secretName: secretName,
       retrieved: true,
-      message: '✅ Secret retrieved from Key Vault successfully!',
-      vaultUrl: keyVaultUrl,
-      // 実際の値は返さない（セキュリティ）
+      message: '✅ Secret retrieved from Key Vault successfully!'
+      // 実際の値・Key Vault URLは返さない（セキュリティ）
       // value: secret.value  // ❌ 本番では絶対にやらない
     });
     
@@ -117,7 +118,7 @@ app.get('/secret', async (req, res) => {
     }
     
     res.status(500).json({ 
-      error: error.message,
+      error: 'Failed to retrieve secret',
       secretName: 'DatabaseConnectionString',
       retrieved: false
     });
@@ -131,13 +132,8 @@ app.get('/info', (req, res) => {
     version: '1.0.0',
     description: 'AZ-400試験対策のハンズオン用Webアプリケーション',
     environment: process.env.NODE_ENV || 'development',
-    nodeVersion: process.version,
-    platform: process.platform,
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
     configuration: {
-      port: port,
-      keyVault: keyVaultUrl || 'not configured',
+      keyVault: keyVaultUrl ? 'configured' : 'not configured',
       appInsights: connectionString ? 'enabled' : 'disabled'
     }
   };
@@ -167,16 +163,14 @@ app.use((err, req, res, next) => {
   }
   
   res.status(500).json({ 
-    error: 'Internal Server Error',
-    message: err.message 
+    error: 'Internal Server Error'
   });
 });
 
 // 404ハンドリング
 app.use((req, res) => {
   res.status(404).json({ 
-    error: 'Not Found',
-    path: req.path 
+    error: 'Not Found'
   });
 });
 
