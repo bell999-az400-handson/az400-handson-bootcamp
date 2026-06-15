@@ -10,6 +10,10 @@ param tenantId string = subscription().tenantId
 @description('Managed IdentityのオブジェクトID（Access Policy用）')
 param managedIdentityObjectId string
 
+@description('Key Vault ネットワークACLのデフォルトアクション（本番/staging: Deny, 開発: Allow）')
+@allowed(['Allow', 'Deny'])
+param networkDefaultAction string = 'Deny'
+
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
   location: location
@@ -28,10 +32,10 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     // accessPolicies は使用しない（RBAC有効化時は不要）
     
     // 🔒 セキュリティ: ネットワークアクセス制限
-    // 本番環境では defaultAction: 'Deny' を推奨
-    // ローカル開発環境からアクセスする場合は 'Allow' または特定IPを許可
+    // 本番/staging環境では 'Deny'（パラメータ経由で制御）
+    // 開発環境では main.bicep から 'Allow' を渡して使用する
     networkAcls: {
-      defaultAction: 'Allow'  // 開発用: 'Deny'に変更して特定IPのみ許可することを推奨
+      defaultAction: networkDefaultAction
       bypass: 'AzureServices'
     }
   }

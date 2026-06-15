@@ -71,6 +71,8 @@ module keyVault 'modules/keyvault.bicep' = {
     keyVaultName: '${resourcePrefix}-${environmentName}-kv'
     location: location
     managedIdentityObjectId: webApp.outputs.managedIdentityPrincipalId
+    // dev環境のみ 'Allow'、staging/prod は 'Deny'（最小権限・ゼロトラスト）
+    networkDefaultAction: environmentName == 'dev' ? 'Allow' : 'Deny'
   }
 }
 

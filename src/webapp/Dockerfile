@@ -3,11 +3,15 @@ FROM node:26-alpine
 # アプリケーションディレクトリを作成
 WORKDIR /app
 
+# npm本体の依存関係に対する脆弱性修正を取り込む
+ARG NPM_VERSION=11.6.2
+RUN npm install -g npm@${NPM_VERSION}
+
 # package.jsonとpackage-lock.jsonをコピー
 COPY package*.json ./
 
 # 本番用の依存関係のみインストール
-RUN npm ci --only=production && \
+RUN npm ci --omit=dev && \
     npm cache clean --force
 
 # アプリケーションのソースをコピー
