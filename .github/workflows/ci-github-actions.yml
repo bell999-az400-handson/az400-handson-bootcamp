@@ -55,15 +55,18 @@ jobs:
       contents: read
       security-events: write
       actions: read
+      id-token: write   # OIDC トークン取得に必要（Federated Identity 認証）
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Azure Login
+      - name: Azure Login (OIDC / Federated Identity)
         uses: azure/login@v3
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       
       - name: Login to Azure Container Registry
         run: |

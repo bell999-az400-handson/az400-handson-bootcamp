@@ -67,15 +67,17 @@ echo ""
 echo "📦 Azure Container Registry作成中..."
 ACR_NAME="az400acr"
 
-if az acr create --name $ACR_NAME --resource-group $RESOURCE_GROUP --sku Basic --output none 2>/dev/null; then
+if az acr create --name $ACR_NAME --resource-group $RESOURCE_GROUP --sku Basic --admin-enabled false --output none 2>/dev/null; then
     echo "✅ ACR作成完了: $ACR_NAME"
 else
     echo "⚠️  ACRはすでに存在します: $ACR_NAME"
 fi
 
-# ACR admin有効化
-az acr update --name $ACR_NAME --admin-enabled true --output none
-echo "✅ ACR admin有効化完了"
+# ACR admin認証は無効（セキュリティベストプラクティス）
+# CI/CDからのpushはManaged Identity / Workload Identity (OIDC) を使用すること
+# GitHub ActionsはOIDCフェデレーション認証でaz acr loginを行う
+az acr update --name $ACR_NAME --admin-enabled false --output none
+echo "✅ ACR admin無効化完了（Managed Identity認証を使用）"
 
 # 環境変数ファイル作成
 echo ""

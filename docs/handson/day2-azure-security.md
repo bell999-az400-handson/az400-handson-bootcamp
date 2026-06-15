@@ -65,8 +65,12 @@ param location string = resourceGroup().location
 @description('テナントID')
 param tenantId string = subscription().tenantId
 
-@description('Managed IdentityのオブジェクトID（Access Policy用）')
-param managedIdentityObjectId string = ''
+@description('Managed IdentityのオブジェクトID（RBAC role assignment用）')
+param managedIdentityObjectId string
+
+@description('Key Vault ネットワークACLのデフォルトアクション（本番/staging: Deny, 開発: Allow）')
+@allowed(['Allow', 'Deny'])
+param networkDefaultAction string = 'Deny'
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
@@ -77,28 +81,30 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
       name: 'standard'
     }
     tenantId: tenantId
-    enableRbacAuthorization: false  // Access Policies使用
+    enableRbacAuthorization: true   // ✅ Azure RBAC使用（Microsoft推奨）
     enableSoftDelete: true
-    softDeleteRetentionInDays: 7
-    
-    // データプレーン権限: Access Policies
-    accessPolicies: [
-      {
-        tenantId: tenantId
-        objectId: managedIdentityObjectId
-        permissions: {
-          secrets: [
-            'get'
-            'list'
-          ]
-        }
-      }
-    ]
-    
+    softDeleteRetentionInDays: 30
+
+    // データプレーン権限は Azure RBAC で管理（accessPolicies は使用しない）
+
+    // 🔒 セキュリティ: ネットワークアクセス制限（環境別に制御）
     networkAcls: {
-      defaultAction: 'Allow'
+      defaultAction: networkDefaultAction  // dev: Allow, staging/prod: Deny
       bypass: 'AzureServices'
     }
+  }
+}
+
+// データプレーン権限: Key Vault Secrets User（シークレット読み取り専用）
+var keyVaultSecretsUserRole = '4633458b-17de-408a-b874-0445c86b69e6'
+
+resource keyVaultRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, managedIdentityObjectId, keyVaultSecretsUserRole)
+  scope: keyVault
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRole)
+    principalId: managedIdentityObjectId
+    principalType: 'ServicePrincipal'
   }
 }
 
@@ -107,29 +113,40 @@ output keyVaultUri string = keyVault.properties.vaultUri
 ```
 
 **重要ポイント**:
-- `enableRbacAuthorization: false` → Access Policies使用
-- `accessPolicies` → データプレーン権限（シークレット読み取り）
-- IAM（管理プレーン）は Azure Portal または Bicep の roleAssignment で設定
+- `enableRbacAuthorization: true` → Azure RBAC使用（Microsoft推奨、Access Policies より安全）
+- `networkDefaultAction` パラメータ → 環境別ネットワーク制御（dev: Allow, staging/prod: Deny）
+- データプレーン権限（シークレット読み取り）は **Key Vault Secrets User** ロール（RBAC）で設定
 - **🔒 シークレット値はBicepにハードコードしない**（後述の手順で安全に設定）
 
-#### 1.3 IAM設定（管理プレーン）
+#### 1.3 IAM設定（RBAC）
 
-**Key Vault Administratorロール付与（Bicep）**:
+> **AZ-400試験ひっかけポイント**: Web AppのManaged Identityにはシークレット読み取りのみ必要なため、**Key Vault Secrets User**（最小権限）を使用します。Key Vault Administratorは過剰権限です。
+
+**Key Vault Secrets Userロール付与（Bicep）** ⭐ 最小権限の原則:
 
 ```bicep
-// 管理プレーン権限: IAM（RBAC）
-var keyVaultAdministratorRole = '00482a5a-887f-4fb3-b363-3b7fe8e74483'
+// データプレーン権限: Key Vault Secrets User（シークレット読み取り専用）
+// ⭐ 最小権限の原則: Key Vault Administrator ではなく Secrets User を使用
+var keyVaultSecretsUserRole = '4633458b-17de-408a-b874-0445c86b69e6'
 
 resource keyVaultRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, managedIdentityObjectId, keyVaultAdministratorRole)
+  name: guid(keyVault.id, managedIdentityObjectId, keyVaultSecretsUserRole)
   scope: keyVault
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultAdministratorRole)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRole)
     principalId: managedIdentityObjectId
     principalType: 'ServicePrincipal'
   }
 }
 ```
+
+**Key Vaultロール一覧（参考）**:
+
+| ロール | ロールID | 用途 |
+|--------|---------|------|
+| Key Vault Secrets User | `4633458b-17de-408a-b874-0445c86b69e6` | シークレット読み取り（get, list）✅ 本ハンズオンで使用 |
+| Key Vault Secrets Officer | `b86a8fe4-41d8-47bf-a5a4-23a77734a55b` | シークレット読み書き（CLIユーザー用） |
+| Key Vault Administrator | `00482a5a-887f-4fb3-b363-3b7fe8e74483` | 全権限（管理プレーン + データプレーン）❌ 過剰権限 |
 
 #### 1.4 シークレットの安全な設定（重要）
 
@@ -545,7 +562,7 @@ az acr create `
   --name $ACR_NAME `
   --resource-group rg-az400-handson `
   --sku Basic `
-  --admin-enabled true
+  --admin-enabled false   # ✅ セキュリティ: Admin認証を無効化（Managed Identity/OIDC使用）
 
 # Dockerイメージをビルド＆プッシュ
 az acr build `
@@ -554,18 +571,28 @@ az acr build `
   --file src/webapp/Dockerfile `
   src/webapp
 
-# Web AppにACR認証情報を設定
+# Web AppにACR設定（Managed Identity認証）
 $ACR_LOGIN_SERVER = az acr show --name $ACR_NAME --query loginServer -o tsv
-$ACR_USERNAME = az acr credential show --name $ACR_NAME --query username -o tsv
-$ACR_PASSWORD = az acr credential show --name $ACR_NAME --query "passwords[0].value" -o tsv
 
+# Web AppのManaged IdentityにACR Pull権限を付与
+$WEBAPP_PRINCIPAL_ID = az webapp identity show `
+  --name $WEBAPP_NAME `
+  --resource-group rg-az400-handson `
+  --query principalId -o tsv
+
+$ACR_ID = az acr show --name $ACR_NAME --resource-group rg-az400-handson --query id -o tsv
+az role assignment create `
+  --assignee $WEBAPP_PRINCIPAL_ID `
+  --role AcrPull `
+  --scope $ACR_ID
+
+# ACR Managed Identity認証を有効化してコンテナイメージを設定
 az webapp config container set `
   --name $WEBAPP_NAME `
   --resource-group rg-az400-handson `
   --docker-custom-image-name "$ACR_LOGIN_SERVER/webapp:latest" `
-  --docker-registry-server-url "https://$ACR_LOGIN_SERVER" `
-  --docker-registry-server-user $ACR_USERNAME `
-  --docker-registry-server-password $ACR_PASSWORD
+  --docker-registry-server-url "https://$ACR_LOGIN_SERVER"
+# ※ username/password 不要（Managed Identityで認証）
 
 # 再起動
 az webapp restart --name $WEBAPP_NAME --resource-group rg-az400-handson
@@ -745,14 +772,15 @@ GitHub ActionsからAzureに接続するための認証情報を作成します�
 
 | 方法 | セキュリティ | 設定の複雑さ | 本ハンズオンでの使用 |
 |------|------------|------------|-------------------|
-| **方法A: 従来の方法（--sdk-auth）** | パスワードベース | 簡単 | ✅ 本ハンズオンで使用 |
-| **方法B: Federated Credential（推奨）** | パスワードレス | やや複雑 | 参考情報として記載 |
+| **方法A: 従来の方法（--sdk-auth）** | パスワードベース | 簡単 | ❌ 非推奨（セキュリティリスク） |
+| **方法B: Federated Credential（OIDC）** | パスワードレス | やや複雑 | ✅ 本ハンズオンで使用 |
 
-**このハンズオンでは方法Aを使用します。**
+**このハンズオンでは方法B（OIDC/Federated Credential）を使用します。**
+> パスワードレスでGitHub ActionsからAzureに安全に接続できるため、Microsoft推奨のアプローチです。
 
 ---
 
-##### 方法A: 従来の方法（--sdk-auth）⭐ 本ハンズオンで使用
+##### 方法A: 従来の方法（--sdk-auth）⚠️ 非推奨（参考情報）
 
 **Azure認証情報の作成手順**:
 
@@ -826,12 +854,16 @@ az ad sp delete --id <clientId>
 
 | シークレット名 | 説明 | 取得方法 |
 |-------------|------|---------|
-| `AZURE_CREDENTIALS` | Azure認証情報（JSON） | 上記で作成した `azure-credentials.json` の内容 |
+| `AZURE_CLIENT_ID` | サービスプリンシパルのクライアントID | 下記手順で取得 |
+| `AZURE_TENANT_ID` | Azure ADテナントID | 下記手順で取得 |
+| `AZURE_SUBSCRIPTION_ID` | AzureサブスクリプションID | `az account show --query id` |
 | `SQL_SERVER_FQDN` | SQL Server FQDN | `az sql server show --query fullyQualifiedDomainName` |
 | `SQL_DATABASE_NAME` | データベース名 | 例: `az400db` |
 | `SQL_ADMIN_USER` | SQL管理者名 | 例: `sqladmin` |
 | `SQL_ADMIN_PASSWORD` | SQL管理者パスワード | デプロイ時に設定した値 |
 | `API_KEY` | 外部APIキー（学習用） | デモ値: `demo-api-key-12345-for-learning` |
+
+> **注**: `AZURE_CREDENTIALS`（JSON形式）は使用しません。OIDC/Federated Credentialを使用するため、個別の3つのSecretを設定します。
 
 ---
 
@@ -842,7 +874,9 @@ az ad sp delete --id <clientId>
 3. Name と Secret を入力して保存
 
 **手順**:
-- `AZURE_CREDENTIALS`: **クリップボードにコピーした認証情報**をペースト（Ctrl+V）
+- `AZURE_CLIENT_ID`: Federated CredentialのクライアントID（下記手順で取得）
+- `AZURE_TENANT_ID`: テナントID（下記手順で取得）
+- `AZURE_SUBSCRIPTION_ID`: サブスクリプションID（`az account show --query id`）
 - `SQL_SERVER_FQDN`: 値を入力
 - `SQL_DATABASE_NAME`: 値を入力
 - `SQL_ADMIN_USER`: 値を入力
@@ -864,9 +898,14 @@ gh --version
 # ログイン
 gh auth login
 
-# ステップ1でクリップボードにコピーした認証情報を設定
-# クリップボードから直接設定（ファイル作成不要）
-Get-Clipboard | gh secret set AZURE_CREDENTIALS
+# OIDC用のシークレットを設定（3つ）
+$CLIENT_ID = az ad sp show --display-name "github-actions-az400-federated" --query appId -o tsv
+$TENANT_ID = az account show --query tenantId -o tsv
+$SUBSCRIPTION_ID = az account show --query id -o tsv
+
+gh secret set AZURE_CLIENT_ID -b $CLIENT_ID
+gh secret set AZURE_TENANT_ID -b $TENANT_ID
+gh secret set AZURE_SUBSCRIPTION_ID -b $SUBSCRIPTION_ID
 
 # その他のシークレットを設定
 gh secret set SQL_SERVER_FQDN -b "az400-dev-sqlserver.database.windows.net"
@@ -874,9 +913,6 @@ gh secret set SQL_DATABASE_NAME -b "az400db"
 gh secret set SQL_ADMIN_USER -b "sqladmin"
 gh secret set SQL_ADMIN_PASSWORD -b "YourSecurePassword123!"
 gh secret set API_KEY -b "demo-api-key-12345-for-learning"
-
-# クリップボードをクリア（セキュリティ対策）
-Set-Clipboard -Value ""
 
 # 確認
 gh secret list
@@ -921,25 +957,23 @@ Write-Host "🔐 GitHub Secrets を設定します" -ForegroundColor Green
 Write-Host ""
 
 # ========================================
-# 3. Azure認証情報の設定
+# 3. Azure認証情報の設定（OIDC/Federated Credential）
 # ========================================
 
-# AZURE_CREDENTIALS: Azureサービスプリンシパル認証情報（JSON形式）
-# - GitHub ActionsからAzureにログインするために必要
-# - セキュリティ: ファイルではなくクリップボードから直接設定
-# - 前提: 事前に`az ad sp create-for-rbac --sdk-auth | Set-Clipboard`を実行済み
-Write-Host "📋 ステップ1でクリップボードにコピーした Azure認証情報を使用します" -ForegroundColor Cyan
-$useClipboard = Read-Host "クリップボードから設定しますか？ (y/n, Enter でスキップ)"
-if ($useClipboard -eq 'y') {
-    # クリップボードの内容をそのままGitHub Secretに設定
-    Get-Clipboard | gh secret set AZURE_CREDENTIALS
-    Write-Host "✅ AZURE_CREDENTIALS を設定しました" -ForegroundColor Green
-    
-    # セキュリティのためクリップボードをクリア
-    # 機密情報がクリップボードに残らないようにする
-    Set-Clipboard -Value ""
-    Write-Host "🔒 クリップボードをクリアしました" -ForegroundColor Green
-}
+# OIDC用のシークレットを設定（3つ）
+# - AZURE_CREDENTIALS（JSON形式）は使用しない
+# - Federated Credentialを使用するため、個別のIDを設定する
+Write-Host "🔐 Azure OIDC認証情報を設定します" -ForegroundColor Cyan
+$CLIENT_ID = az ad sp show --display-name "github-actions-az400-federated" --query appId -o tsv
+$TENANT_ID = az account show --query tenantId -o tsv
+$SUBSCRIPTION_ID = az account show --query id -o tsv
+
+gh secret set AZURE_CLIENT_ID -b $CLIENT_ID
+Write-Host "✅ AZURE_CLIENT_ID を設定しました" -ForegroundColor Green
+gh secret set AZURE_TENANT_ID -b $TENANT_ID
+Write-Host "✅ AZURE_TENANT_ID を設定しました" -ForegroundColor Green
+gh secret set AZURE_SUBSCRIPTION_ID -b $SUBSCRIPTION_ID
+Write-Host "✅ AZURE_SUBSCRIPTION_ID を設定しました" -ForegroundColor Green
 
 # ========================================
 # 4. SQL Server接続情報の設定
@@ -1061,7 +1095,9 @@ cd scripts/setup
 
 📋 ステップ1でクリップボードにコピーした Azure認証情報を使用します
 クリップボードから設定しますか？ (y/n, Enter でスキップ): y
-✅ AZURE_CREDENTIALS を設定しました
+✅ AZURE_CLIENT_ID を設定しました
+✅ AZURE_TENANT_ID を設定しました
+✅ AZURE_SUBSCRIPTION_ID を設定しました
 🔒 クリップボードをクリアしました
 
 💾 SQL Server接続情報を設定します
@@ -1080,7 +1116,9 @@ API Key (Enter でスキップ): **********
 ✅ API_KEY を設定しました
 
 🔍 設定されたシークレット一覧:
-AZURE_CREDENTIALS    Updated 2026-05-08
+AZURE_CLIENT_ID       Updated 2026-05-08
+AZURE_TENANT_ID       Updated 2026-05-08
+AZURE_SUBSCRIPTION_ID Updated 2026-05-08
 SQL_SERVER_FQDN      Updated 2026-05-08
 SQL_DATABASE_NAME    Updated 2026-05-08
 SQL_ADMIN_USER       Updated 2026-05-08
@@ -1178,7 +1216,7 @@ jobs:
       contents: read
     steps:
       - name: Azure Login (OIDC)
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
           # 方法Bではcreds不要、代わりにOIDCトークンを使用
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -1204,7 +1242,7 @@ jobs:
 
 </details>
 
-**このハンズオンでは方法Aを使用しますが、実務では方法Bの採用を検討してください。**
+**このハンズオンでは方法B（OIDC/Federated Credential）を使用します。**
 
 ---
 
@@ -1215,7 +1253,9 @@ jobs:
 **GitHub Web UIで確認**:
 1. リポジトリ → Settings → Secrets and variables → Actions
 2. 以下のSecretsが表示されていることを確認：
-   - AZURE_CREDENTIALS
+   - AZURE_CLIENT_ID
+   - AZURE_TENANT_ID
+   - AZURE_SUBSCRIPTION_ID
    - SQL_SERVER_FQDN
    - SQL_DATABASE_NAME
    - SQL_ADMIN_USER
@@ -1229,8 +1269,10 @@ gh secret list
 
 **出力例**:
 ```
-AZURE_CREDENTIALS    Updated 2026-05-05
-SQL_SERVER_FQDN      Updated 2026-05-05
+AZURE_CLIENT_ID       Updated 2026-05-05
+AZURE_TENANT_ID       Updated 2026-05-05
+AZURE_SUBSCRIPTION_ID Updated 2026-05-05
+SQL_SERVER_FQDN       Updated 2026-05-05
 SQL_DATABASE_NAME    Updated 2026-05-05
 SQL_ADMIN_USER       Updated 2026-05-05
 SQL_ADMIN_PASSWORD   Updated 2026-05-05
@@ -1283,11 +1325,13 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    # Azure認証（方法A: AZURE_CREDENTIALS使用）
-    - name: Azure Login
+    # Azure認証（OIDC / Federated Identity）
+    - name: Azure Login (OIDC)
       uses: azure/login@v2
       with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
     
     # Key Vault名を動的取得
     - name: Get Key Vault Name
@@ -1330,7 +1374,7 @@ jobs:
 
 **ポイント**:
 - ✅ `workflow_dispatch`: 手動実行トリガー
-- ✅ `secrets.AZURE_CREDENTIALS`: ステップ2で設定したAzure認証情報を使用
+- ✅ OIDC認証（`AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID`）でパスワードレスにAzureへ接続
 - ✅ 環境変数 `env:` でシークレットを安全に受け渡し
 - ✅ `--output none`: 機密情報をログに出力しない
 
@@ -1446,6 +1490,7 @@ GitHub ActionsからAzure Container Registry (ACR)にDockerイメージをpush�
 - ✅ Managed Identity原則の適用（Admin password使用を避ける）
 - ✅ RBACベースのACRアクセス制御
 - ✅ GitHub Secretsの最小化（1つのAZURE_CREDENTIALSのみ使用）
+- ✅ GitHub Secretsの最小化（OIDC/Federated Credentialで`AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID`の3つのSecretを使用）
 
 ---
 
@@ -1464,11 +1509,13 @@ GitHub ActionsからAzure Container Registry (ACR)にDockerイメージをpush�
 
 **推奨方法（✅ ベストプラクティス）**:
 ```yaml
-# Azure CLI経由でトークンベース認証（パスワードレス）
-- name: Azure Login
+# Azure CLI経由でトークンベース認証（パスワードレス / OIDC）
+- name: Azure Login (OIDC)
   uses: azure/login@v2
   with:
-    creds: ${{ secrets.AZURE_CREDENTIALS }}
+    client-id: ${{ secrets.AZURE_CLIENT_ID }}
+    tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+    subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 - name: Login to Azure Container Registry
   run: |
@@ -1510,11 +1557,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      # ステップ 1: Azure CLIでログイン（AZURE_CREDENTIALSを使用）
-      - name: Azure Login
+      # ステップ 1: Azure CLIでログイン（OIDC/Federated Identity使用）
+      - name: Azure Login (OIDC)
         uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       
       # ステップ 2: ACRにログイン（パスワードレス認証）
       - name: Login to Azure Container Registry
@@ -1576,8 +1625,8 @@ $ACR_ID = az acr show `
   --query id -o tsv
 
 # Service Principal App IDを取得
-# （AZURE_CREDENTIALSのclientIdまたはAzure Portalで確認）
-$SP_APP_ID = "<Service-Principal-App-ID>"
+# （Azure PortalまたはAZURE_CLIENT_ID Secretの値を使用）
+$SP_APP_ID = az ad sp show --display-name "github-actions-az400-federated" --query appId -o tsv
 
 # AcrPushロールを付与（Dockerイメージのpush権限）
 az role assignment create `
@@ -1599,7 +1648,7 @@ az role assignment list --scope $ACR_ID --output table
 | 項目 | Admin Password方式 | Azure CLI方式（推奨） |
 |------|-------------------|---------------------|
 | **認証方法** | Username/Password（平文） | ✅ Azure ADトークン（期限付き） |
-| **必要なSecrets** | 3つ（LOGIN_SERVER, USERNAME, PASSWORD） | ✅ **1つ**（AZURE_CREDENTIALS） |
+| **必要なSecrets** | 3つ（LOGIN_SERVER, USERNAME, PASSWORD） | ✅ **3つ**（AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID） |
 | **パスワードローテーション** | 手動で必要 | ✅ 自動管理 |
 | **権限スコープ** | Admin（全権限） | ✅ AcrPush（最小権限） |
 | **監査ログ** | Admin userとして記録 | ✅ Service Principal IDで追跡可能 |
@@ -1625,7 +1674,7 @@ az role assignment list --scope $ACR_ID --output table
 3. **期待される出力**:
    ```
    ✅ Checkout code
-   ✅ Azure Login (using AZURE_CREDENTIALS)
+  ✅ Azure Login (OIDC / Federated Identity)
    ✅ Login to Azure Container Registry
       Login Succeeded
    ✅ Build and push Docker image
@@ -1665,7 +1714,7 @@ az role assignment list --scope $ACR_ID --output table
 |---------|------|--------|
 | ACRへのCI/CD認証 | Azure CLI + Service Principal | ❌ Admin password |
 | 最小権限の原則 | AcrPushロール | ❌ Contributor/Owner |
-| GitHub Secretsの最小化 | AZURE_CREDENTIALS 1つ | ❌ 複数のパスワードSecrets |
+| GitHub Secretsの最小化 | OIDC/Federated Credential（個別IDを使用） | ❌ 複数のパスワードSecrets |
 | パスワード管理 | トークンベース自動管理 | ❌ 手動ローテーション |
 | 監査とトレーサビリティ | Service Principal ID追跡 | ❌ 共有Admin user |
 | セキュリティスキャン結果の保存 | GitHub Security tab (SARIF) | ❌ ビルドログのみ |
@@ -1682,7 +1731,7 @@ az role assignment list --scope $ACR_ID --output table
 **ベストプラクティス**:
 - ✅ `az acr login`でパスワードレス認証
 - ✅ Service PrincipalにAcrPushロールのみ付与
-- ✅ 既存の`AZURE_CREDENTIALS` Secretを再利用
+- ✅ OIDC/Federated Credentialでパスワードレス認証
 - ✅ トークンベース認証で監査ログを個別追跡
 - ✅ **`permissions: security-events: write`でSARIF結果をアップロード**
 - ✅ **Trivyで脆弱性スキャンをCI/CDパイプラインに統合**
@@ -1693,7 +1742,7 @@ az role assignment list --scope $ACR_ID --output table
 | エラーメッセージ | 原因 | 解決方法 |
 |----------------|------|---------|
 | "Resource not accessible by integration" | GitHub Actions権限不足 | `permissions: security-events: write`を追加 |
-| "Login failed: not valid JSON" | AZURE_CREDENTIALS形式が不正 | `az ad sp create-for-rbac --sdk-auth`で再作成 |
+| "Login failed: OIDC credentials invalid" | Federated Credential設定不備 | Federated Credentialの`subject`ブランチ名を確認 |
 | "permission denied while trying to connect to Docker daemon" | Docker未起動 | Docker Desktopを起動 |
 | "denied: requested access to the resource is denied" | ACR push権限なし | Service PrincipalにAcrPushロール付与 |
 

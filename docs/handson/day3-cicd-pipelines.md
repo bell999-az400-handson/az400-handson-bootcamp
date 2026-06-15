@@ -33,34 +33,36 @@
 #### 1.1 Service Principal作成
 
 > **📝 注意**: この手順は **Day 2で既に実施済み** の場合は省略できます。  
-> Day 2で作成したService Principal (`github-actions-az400`) とGitHub Secret (`AZURE_CREDENTIALS`) をそのまま使用してください。
+> Day 2で設定したFederated Credential (`github-actions-az400`) とGitHub Secrets (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) をそのまま使用してください。
 
 ```powershell
 # 1. サブスクリプションIDを取得
 $SUBSCRIPTION_ID = az account show --query id -o tsv
 
-# 2. サービスプリンシパルを作成してクリップボードにコピー（推奨）
-az ad sp create-for-rbac `
-  --name "github-actions-az400" `
-  --role contributor `
-  --scopes "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/rg-az400-handson" `
-  --sdk-auth | Set-Clipboard
+# 2. サービスプリンシパルを作成（Federated Credential / OIDC方式）
+az ad sp create --display-name "github-actions-az400"
 
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "✅ Azure認証情報をクリップボードにコピーしました" -ForegroundColor Green
-    Write-Host "⚠️ この情報は機密です。GitHub Secretsに設定したら、クリップボードをクリアしてください" -ForegroundColor Yellow
-} else {
-    Write-Host "❌ Service Principal作成に失敗しました（終了コード: $LASTEXITCODE）" -ForegroundColor Red
-}
+# App ID取得
+$SP_APP_ID = az ad sp show --display-name "github-actions-az400" --query appId -o tsv
+Write-Host "✅ Service Principal App ID: $SP_APP_ID" -ForegroundColor Green
 
-# 3. 作成されたService Principalを確認
+# Federated Credentialを追加（GitHubリポジトリのmainブランチ用）
+# ※ <GITHUB_ORG>/<GITHUB_REPO> を実際の値に置き換えてください
+$REPO = "<GITHUB_ORG>/<GITHUB_REPO>"
+az ad app federated-credential create `
+  --id $SP_APP_ID `
+  --parameters "{`"name`":`"github-main`",`"issuer`":`"https://token.actions.githubusercontent.com`",`"subject`":`"repo:${REPO}:ref:refs/heads/main`",`"audiences`":[`"api://AzureADTokenExchange`"]}"
+
+# 3. OIDC用のGitHub Secretsを設定
+$TENANT_ID = az account show --query tenantId -o tsv
+gh secret set AZURE_CLIENT_ID -b $SP_APP_ID
+gh secret set AZURE_TENANT_ID -b $TENANT_ID
+gh secret set AZURE_SUBSCRIPTION_ID -b $SUBSCRIPTION_ID
+Write-Host "✅ OIDC用GitHub Secretsを設定しました" -ForegroundColor Green
+
+# 4. 作成されたService Principalを確認
 Write-Host "`n📋 Service Principal一覧:" -ForegroundColor Cyan
 az ad sp list --filter "displayName eq 'github-actions-az400'" --query "[].{Name:displayName, AppId:appId, CreatedDate:createdDateTime}" -o table
-
-# 4. クリップボードの内容を確認（任意）
-# Get-Clipboard | ConvertFrom-Json | ConvertTo-Json -Depth 5
-
-# 5. クリップボードから直接GitHub Secretsに設定（次のステップで使用）
 ```
 
 出力例:
@@ -111,16 +113,11 @@ az acr show --name az400acr --resource-group rg-az400-handson --query loginServe
 ```yaml
 name: CI - GitHub Actions
 
-on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
-
-env:
-  NODE_VERSION: '18'
-  WORKING_DIRECTORY: './src/webapp'
-
+出力例:
+```
+✅ Service Principal App ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+✅ OIDC用GitHub Secretsを設定しました
+```
 jobs:
   # ジョブ1: ビルドとテスト
   # 目的: Node.jsアプリケーションの依存関係インストール、Lint、テスト実行、カバレッジ収集
