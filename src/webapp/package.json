@@ -25,13 +25,13 @@
     "@azure/keyvault-secrets": "^4.7.0",
     "applicationinsights": "^3.15.1",
     "express": "^5.2.1",
-    "helmet": "^8.2.0"
+    "helmet": "^8.3.0"
   },
   "devDependencies": {
     "eslint": "^10.6.0",
     "jest": "^30.3.0",
     "nodemon": "^3.0.3",
-    "supertest": "^6.3.4"
+    "supertest": "^7.2.2"
   },
   "engines": {
     "node": ">=18.0.0",
@@ -52,6 +52,9 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",
     "@opentelemetry/otlp-exporter-base": "^0.219.0",
     "@opentelemetry/otlp-transformer": "^0.219.0",
-    "@opentelemetry/resources": "^2.8.0"
+    "@opentelemetry/resources": "^2.8.0",
+    "@opentelemetry/propagator-jaeger": "^2.9.0",
+    "@opentelemetry/sdk-trace-node": "^2.7.1",
+    "uuid": "^11.1.1"
   }
 }
