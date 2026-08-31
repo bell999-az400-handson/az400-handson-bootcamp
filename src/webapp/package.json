@@ -38,10 +38,11 @@
     "npm": ">=10.0.0"
   },
   "overrides": {
-    "brace-expansion": "^5.0.6",
+    "brace-expansion": "^5.0.9",
     "picomatch": "^4.0.4",
     "ip-address": "^10.0.1",
     "qs": "^6.15.2",
+    "js-yaml": "^3.15.1",
     "@opentelemetry/core": "^2.8.0",
     "@opentelemetry/sdk-trace-base": "^2.8.0",
     "@opentelemetry/sdk-metrics": "^2.8.0",
