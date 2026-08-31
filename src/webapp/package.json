@@ -23,7 +23,7 @@
   "dependencies": {
     "@azure/identity": "^4.0.1",
     "@azure/keyvault-secrets": "^4.7.0",
-    "applicationinsights": "^3.15.1",
+    "applicationinsights": "^3.16.0",
     "express": "^5.2.1",
     "helmet": "^8.3.0"
   },
